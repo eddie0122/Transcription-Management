@@ -1,0 +1,6 @@
+# Shared backend dependencies (native macOS and Docker). Pinned versions
+# tested with Python 3.9 (macOS system Python) through 3.11 (Docker image).
+fastapi==0.115.12
+uvicorn[standard]==0.33.0
+python-multipart==0.0.20
+httpx==0.28.1

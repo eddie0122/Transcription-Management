@@ -1,0 +1,75 @@
+name: audio-transcription
+
+services:
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:${APP_PORT:-8080}:80"
+    environment:
+      MAX_BODY_SIZE: "${MAX_BODY_SIZE:-2g}"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      APP_HOST: "0.0.0.0"
+      APP_PORT: "8000"
+      DATA_DIR: /app/data
+      MODEL_CACHE_DIR: /app/models
+      TRANSCRIPTION_ENGINE: faster-whisper
+      TRANSCRIPTION_DEVICE: cuda
+      RETENTION_DAYS: "${RETENTION_DAYS:-7}"
+      LLM_BASE_URL: "${LLM_BASE_URL:-TBA}"
+      LLM_MODEL: "${LLM_MODEL:-TBA}"
+      LLM_API_KEY_FILE: /run/secrets/llm_api_key
+    secrets:
+      - llm_api_key
+    volumes:
+      - app_data:/app/data
+      - model_cache:/app/models
+    expose:
+      - "8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)"
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 60s
+    stop_grace_period: 60s
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+volumes:
+  app_data:
+  model_cache:
+
+secrets:
+  llm_api_key:
+    file: ./secrets/llm_api_key.txt

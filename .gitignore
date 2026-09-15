@@ -1,0 +1,11 @@
+.env
+secrets/*
+!secrets/README.md
+backend/.venv/
+__pycache__/
+*.pyc
+native/whisper.cpp/
+native/macos-capture/system-audio-capture
+scripts/macos/native.env
+data/
+.DS_Store

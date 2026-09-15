@@ -1,0 +1,41 @@
+# Reverse proxy for the containerized deployment.
+# Preserves the /api/ and /ws/ route contracts, supports WebSocket upgrades,
+# long-lived sessions, streamed responses, and the documented upload limit.
+server {
+    listen 80;
+    server_name _;
+
+    root /usr/share/nginx/html;
+    index index.html;
+
+    client_max_body_size ${MAX_BODY_SIZE};
+
+    gzip on;
+    gzip_types text/css application/javascript application/json;
+
+    location /api/ {
+        proxy_pass http://backend:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_request_buffering off;   # stream large uploads
+        proxy_buffering off;           # stream downloads/responses
+        proxy_read_timeout 3600s;
+        proxy_send_timeout 3600s;
+    }
+
+    location /ws/ {
+        proxy_pass http://backend:8000;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+        proxy_set_header Origin $http_origin;
+        proxy_read_timeout 86400s;     # sustained live sessions
+        proxy_send_timeout 86400s;
+    }
+
+    location / {
+        try_files $uri /index.html;
+    }
+}

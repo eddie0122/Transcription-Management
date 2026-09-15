@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Audio Transcription</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="app-header">
+  <div class="header-inner">
+    <div class="brand">Audio Transcription</div>
+    <nav class="mode-tabs" role="tablist" aria-label="Mode selector">
+      <button id="tab-files" class="mode-tab active" role="tab" aria-selected="true" aria-controls="view-files">From Files</button>
+      <button id="tab-live" class="mode-tab" role="tab" aria-selected="false" aria-controls="view-live">Real Time</button>
+    </nav>
+    <div class="header-right">
+      <div id="global-rec" class="global-rec" hidden>
+        <span class="rec-dot" aria-hidden="true"></span>
+        <span id="global-rec-time">0:00</span>
+        <button id="global-stop" class="btn btn-danger btn-sm">Stop</button>
+      </div>
+      <button id="btn-settings" class="btn btn-ghost" aria-haspopup="dialog">⚙ Settings</button>
+    </div>
+  </div>
+</header>
+
+<main class="content">
+
+<!-- ============================= FROM FILES ============================= -->
+<section id="view-files" role="tabpanel" aria-labelledby="tab-files">
+
+  <div class="panel" id="upload-panel">
+    <div id="dropzone" class="dropzone" tabindex="0" role="button"
+         aria-label="Add media files by dropping them here or pressing Enter to browse">
+      <div class="dropzone-title">Drag audio or video files here</div>
+      <div class="dropzone-sub" id="upload-limits">or</div>
+      <button id="btn-select-files" class="btn btn-secondary" type="button">Select Files</button>
+      <input type="file" id="file-input" multiple hidden>
+    </div>
+    <ul id="selected-files" class="file-list" aria-label="Selected files"></ul>
+    <p id="files-empty" class="empty-state">No files selected yet. Add audio or video files above, adjust the settings below, then choose Start Processing.</p>
+  </div>
+
+  <div class="panel collapsible" id="files-transcription-panel">
+    <button class="collapsible-header" aria-expanded="true" data-target="files-transcription-body">
+      <span class="collapsible-title">Transcription</span>
+      <span class="collapsible-summary" id="files-transcription-summary"></span>
+      <span class="disclosure" aria-hidden="true">▾</span>
+    </button>
+    <div class="collapsible-body" id="files-transcription-body">
+      <div class="form-grid">
+        <label>Source language
+          <select id="f-language"></select>
+          <small>Use Auto-detect or the spoken language. Multilingual models are used for non-English sources.</small>
+        </label>
+        <label>Model
+          <select id="f-model"></select>
+          <small id="f-model-hint"></small>
+        </label>
+        <label>Accuracy / speed
+          <select id="f-quality">
+            <option value="fast">Fast — smallest beam, quickest results</option>
+            <option value="balanced">Balanced</option>
+            <option value="accuracy" selected>Accuracy — wider beam, slower</option>
+          </select>
+          <small>File mode favors accuracy by default.</small>
+        </label>
+        <label>Hardware
+          <select id="f-device"></select>
+          <small id="f-device-hint"></small>
+        </label>
+      </div>
+      <details class="advanced">
+        <summary>Advanced parameters</summary>
+        <div class="form-grid">
+          <label>Beam size <input id="f-beam" type="number" min="1" max="10" placeholder="preset default">
+            <small>Wider beams improve accuracy at a speed cost.</small></label>
+          <label>Temperature <input id="f-temp" type="number" min="0" max="1" step="0.1" placeholder="0.0">
+            <small>0 is deterministic; higher values only help on difficult audio.</small></label>
+          <label id="f-compute-wrap">Compute precision
+            <select id="f-compute"></select>
+            <small>Supported precisions for the active engine.</small></label>
+          <label id="f-vad-wrap" class="check"><input id="f-vad" type="checkbox" checked> Voice activity detection
+            <small>Skips silence before decoding (engine-dependent).</small></label>
+          <label id="f-words-wrap" class="check"><input id="f-words" type="checkbox"> Word timestamps
+            <small>Where supported by the active engine.</small></label>
+          <label>Audio track (multi-track video)
+            <input id="f-track" type="number" min="0" max="32" step="1" placeholder="0 (default track)">
+            <small>Track index for videos with several audio tracks; the default track is 0. Detected tracks are listed on the finished job. Non-default tracks require ffmpeg.</small></label>
+          <label class="wide">Initial prompt / vocabulary hints
+            <input id="f-prompt" type="text" maxlength="800" placeholder="Names, jargon, spelling hints…">
+            <small>Passed to the engine where supported.</small></label>
+        </div>
+      </details>
+    </div>
+  </div>
+
+  <div class="panel collapsible" id="files-translation-panel">
+    <button class="collapsible-header" aria-expanded="false" data-target="files-translation-body">
+      <span class="collapsible-title">Translation</span>
+      <span class="collapsible-summary" id="files-translation-summary">Off</span>
+      <span class="disclosure" aria-hidden="true">▾</span>
+    </button>
+    <div class="collapsible-body" id="files-translation-body" hidden>
+      <div class="form-grid">
+        <label class="check"><input id="f-translate" type="checkbox"> Enable translation
+          <small>Sends transcript text to the configured LLM. Off by default; nothing is sent while off.</small></label>
+        <label>Target language <select id="f-target"></select>
+          <small>Independent of the source language. Quality depends on the selected LLM.</small></label>
+        <label>LLM preset <select id="f-preset"></select>
+          <small id="f-preset-hint"></small></label>
+      </div>
+      <p id="f-translation-status" class="status-line"></p>
+    </div>
+  </div>
+
+  <div class="panel actions-panel">
+    <button id="btn-start" class="btn btn-primary btn-lg">Start Processing</button>
+    <span id="start-error" class="error-text" role="alert"></span>
+  </div>
+
+  <div class="panel" id="progress-panel" hidden>
+    <h2>Progress</h2>
+    <ul id="progress-list" class="job-list" aria-label="Job progress"></ul>
+  </div>
+
+  <div class="panel" id="results-panel" hidden>
+    <h2>Completed results</h2>
+    <ul id="results-list" class="job-list" aria-label="Completed results"></ul>
+  </div>
+</section>
+
+<!-- ============================= REAL TIME ============================= -->
+<section id="view-live" role="tabpanel" aria-labelledby="tab-live" hidden>
+
+  <div class="panel session-controls" id="session-controls">
+    <div class="session-row">
+      <label class="src-label">Source
+        <select id="l-source">
+          <option value="microphone">Microphone</option>
+          <option value="system">Computer Audio</option>
+        </select>
+      </label>
+      <label class="src-label" id="l-mic-wrap">Device
+        <select id="l-mic"></select>
+      </label>
+      <button id="btn-live-start" class="btn btn-primary">Start</button>
+      <button id="btn-live-stop" class="btn btn-danger" hidden>Stop</button>
+      <span id="l-recstate" class="rec-state" aria-live="polite">Not recording</span>
+      <span id="l-timer" class="timer" aria-label="Elapsed time">0:00</span>
+      <div class="level-wrap" aria-label="Input level"><div id="l-level" class="level-bar"></div></div>
+    </div>
+    <p id="l-source-hint" class="status-line"></p>
+    <p id="l-error" class="error-text" role="alert"></p>
+  </div>
+
+  <div class="panel collapsible">
+    <button class="collapsible-header" aria-expanded="false" data-target="live-transcription-body">
+      <span class="collapsible-title">Transcription</span>
+      <span class="collapsible-summary" id="live-transcription-summary"></span>
+      <span class="disclosure" aria-hidden="true">▾</span>
+    </button>
+    <div class="collapsible-body" id="live-transcription-body" hidden>
+      <div class="form-grid">
+        <label>Source language <select id="l-language"></select></label>
+        <label>Model <select id="l-model"></select>
+          <small id="l-model-hint">Live mode favors smaller models for sustainable latency.</small></label>
+        <label>Accuracy / speed
+          <select id="l-quality">
+            <option value="fast" selected>Fast — lowest latency</option>
+            <option value="balanced">Balanced</option>
+            <option value="accuracy">Accuracy — slower</option>
+          </select></label>
+        <label>Hardware <select id="l-device"></select></label>
+      </div>
+      <details class="advanced">
+        <summary>Advanced live parameters</summary>
+        <div class="form-grid">
+          <label>Max chunk duration (s) <input id="l-maxchunk" type="number" min="3" max="30" step="1" placeholder="10">
+            <small>Longest utterance before a forced split. Buffering control, not a latency guarantee.</small></label>
+          <label>Speech endpoint silence (ms) <input id="l-silence" type="number" min="200" max="3000" step="50" placeholder="600">
+            <small>Silence needed to finalize a segment.</small></label>
+          <label>Partial update interval (s) <input id="l-partial" type="number" min="0.5" max="5" step="0.5" placeholder="1.5">
+            <small>How often provisional text refreshes.</small></label>
+        </div>
+      </details>
+      <p class="status-line">Engine, model, source, and translation settings are locked while a session is recording; edits apply to the next session.</p>
+    </div>
+  </div>
+
+  <div class="panel collapsible">
+    <button class="collapsible-header" aria-expanded="false" data-target="live-translation-body">
+      <span class="collapsible-title">Translation</span>
+      <span class="collapsible-summary" id="live-translation-summary">Off</span>
+      <span class="disclosure" aria-hidden="true">▾</span>
+    </button>
+    <div class="collapsible-body" id="live-translation-body" hidden>
+      <div class="form-grid">
+        <label class="check"><input id="l-translate" type="checkbox"> Enable translation
+          <small>Finalized segments are queued for translation; delays never block transcription.</small></label>
+        <label>Target language <select id="l-target"></select></label>
+        <label>LLM preset <select id="l-preset"></select>
+          <small id="l-preset-hint"></small></label>
+      </div>
+      <p id="l-translation-status" class="status-line"></p>
+    </div>
+  </div>
+
+  <div class="panel" id="live-transcript-panel">
+    <div class="transcript-head">
+      <h2>Live transcript <span class="muted">(newest first — exports are chronological)</span></h2>
+      <span id="live-status-chip" class="chip" aria-live="polite" hidden></span>
+    </div>
+    <p id="live-empty" class="empty-state">Choose a source and press Start to begin a session. Recording never starts automatically.</p>
+    <div id="live-rows" class="segment-rows" aria-label="Live transcript"></div>
+    <button id="btn-return-latest" class="btn btn-secondary return-latest" hidden>Return to Latest</button>
+  </div>
+
+  <div class="panel" id="live-results-panel" hidden>
+    <h2>Session results</h2>
+    <div id="live-results" class="artifact-row"></div>
+  </div>
+</section>
+</main>
+
+<!-- announcements for assistive technology (recording/errors only) -->
+<div id="aria-announcer" class="sr-only" aria-live="assertive"></div>
+
+<!-- ============================= SETTINGS ============================= -->
+<dialog id="settings-modal" class="modal" aria-label="Settings">
+  <div class="modal-head">
+    <h2>Settings</h2>
+    <button class="btn btn-ghost" id="btn-settings-close" aria-label="Close settings">✕</button>
+  </div>
+  <nav class="settings-tabs" role="tablist" aria-label="Settings sections">
+    <button class="settings-tab active" data-pane="pane-llm" role="tab" aria-selected="true">LLM presets</button>
+    <button class="settings-tab" data-pane="pane-engine" role="tab" aria-selected="false">Transcription</button>
+    <button class="settings-tab" data-pane="pane-history" role="tab" aria-selected="false">Previous jobs</button>
+    <button class="settings-tab" data-pane="pane-retention" role="tab" aria-selected="false">Automatic deletion</button>
+  </nav>
+
+  <div id="pane-llm" class="settings-pane">
+    <p class="status-line">Translation uses an OpenAI-compatible chat completions endpoint. Entries with <code>TBA</code> values stay unconfigured and are never contacted.</p>
+    <ul id="preset-list" class="preset-list"></ul>
+    <button id="btn-preset-new" class="btn btn-secondary">New preset</button>
+    <form id="preset-form" class="preset-form" hidden>
+      <input type="hidden" id="p-id">
+      <div class="form-grid">
+        <label>Name <input id="p-name" required></label>
+        <label>Base URL <input id="p-base" placeholder="http://host:port/v1"></label>
+        <label>Model ID <input id="p-model" placeholder="TBA"></label>
+        <label>Timeout (s) <input id="p-timeout" type="number" min="5" max="600" value="60"></label>
+        <label>API key <input id="p-key" type="password" placeholder="leave blank to keep current" autocomplete="off">
+          <small>Stored in the system credential store, redacted from logs.</small></label>
+        <label>Temperature <input id="p-temp" type="number" min="0" max="2" step="0.1" placeholder="0.2"></label>
+        <label>Max tokens <input id="p-maxtok" type="number" min="1" placeholder="auto"></label>
+      </div>
+      <div class="btn-row">
+        <button type="submit" class="btn btn-primary">Save preset</button>
+        <button type="button" id="btn-preset-test" class="btn btn-secondary">Test Connection</button>
+        <button type="button" id="btn-preset-cancel" class="btn btn-ghost">Cancel</button>
+      </div>
+      <p id="preset-test-result" class="status-line" role="status"></p>
+    </form>
+  </div>
+
+  <div id="pane-engine" class="settings-pane" hidden>
+    <h3>Hardware preference</h3>
+    <div id="hw-options" class="hw-options" role="radiogroup" aria-label="Hardware preference"></div>
+    <h3>Models</h3>
+    <p class="status-line" id="models-engine-note"></p>
+    <table class="models-table"><thead>
+      <tr><th scope="col">Model</th><th scope="col">Size</th><th scope="col">Status</th><th scope="col">Action</th></tr>
+    </thead><tbody id="models-tbody"></tbody></table>
+    <h3>Defaults</h3>
+    <div class="form-grid">
+      <label>Default source language <select id="s-default-lang"></select></label>
+      <label>Default LLM preset <select id="s-default-preset"></select></label>
+    </div>
+    <button id="btn-save-defaults" class="btn btn-primary">Save defaults</button>
+    <p id="defaults-saved" class="status-line" role="status"></p>
+  </div>
+
+  <div id="pane-history" class="settings-pane" hidden>
+    <p class="status-line" id="history-summary"></p>
+    <ul id="history-list" class="job-list"></ul>
+  </div>
+
+  <div id="pane-retention" class="settings-pane" hidden>
+    <p class="status-line">Results, uploads, recordings, transcripts, and exports are deleted automatically after this period, counted from when each job finished (including failed and canceled jobs). Cleanup runs at startup and hourly; files that expire while the app is closed are removed at the next startup. Model downloads and LLM presets are never deleted by retention.</p>
+    <label>Retention period (days)
+      <input id="retention-days" type="number" min="1" max="3650" step="1">
+    </label>
+    <button id="btn-save-retention" class="btn btn-primary">Apply</button>
+    <div id="retention-confirm" class="warn-box" hidden>
+      <p id="retention-confirm-msg"></p>
+      <ul id="retention-affected"></ul>
+      <div class="btn-row">
+        <button id="btn-retention-confirm" class="btn btn-danger">Delete these jobs and apply</button>
+        <button id="btn-retention-cancel" class="btn btn-ghost">Cancel</button>
+      </div>
+    </div>
+    <p id="retention-saved" class="status-line" role="status"></p>
+  </div>
+</dialog>
+
+<!-- ============================= REVIEW ============================= -->
+<dialog id="review-modal" class="modal modal-wide" aria-label="Transcript review">
+  <div class="modal-head">
+    <h2 id="review-title">Transcript</h2>
+    <button class="btn btn-ghost" id="btn-review-close" aria-label="Close review">✕</button>
+  </div>
+  <p id="review-meta" class="status-line"></p>
+  <div id="review-downloads" class="artifact-row"></div>
+  <div id="review-rows" class="segment-rows chronological"></div>
+</dialog>
+
+<script src="app.js"></script>
+</body>
+</html>

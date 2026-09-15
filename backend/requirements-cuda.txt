@@ -1,0 +1,6 @@
+# Docker (NVIDIA/CUDA) additions. ctranslate2 4.4.x is the last line using
+# cuDNN 8, matching the nvidia/cuda:12.2.2-cudnn8 base image; do not upgrade
+# to ctranslate2>=4.5 without moving the base image to cuDNN 9.
+-r requirements.txt
+faster-whisper==1.1.0
+ctranslate2==4.4.0

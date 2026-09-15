@@ -1,0 +1,28 @@
+# CPU-only backend image: no CUDA runtime, no NVIDIA dependencies.
+FROM python:3.11-slim-bookworm
+
+ENV PYTHONUNBUFFERED=1 PIP_DISABLE_PIP_VERSION_CHECK=1 PIP_NO_CACHE_DIR=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      ffmpeg gosu ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt ./
+# faster-whisper on CPU; ctranslate2 wheel includes CPU support without CUDA.
+RUN python -m pip install -r requirements.txt faster-whisper==1.1.0 ctranslate2==4.4.0
+
+COPY app ./app
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint.sh
+RUN chmod +x /usr/local/bin/docker-entrypoint.sh \
+    && useradd -r -u 10001 -m appuser \
+    && mkdir -p /app/data /app/models \
+    && chown -R appuser:appuser /app
+
+ENV FRONTEND_DIST=/nonexistent \
+    APP_HOST=0.0.0.0 APP_PORT=8000 \
+    DATA_DIR=/app/data MODEL_CACHE_DIR=/app/models
+
+EXPOSE 8000
+ENTRYPOINT ["docker-entrypoint.sh"]
+CMD ["python", "-m", "app.main"]
