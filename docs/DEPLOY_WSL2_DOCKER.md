@@ -42,6 +42,7 @@ transcription (below) to validate the CUDA/cuDNN dependency chain end to end.
 | External LLM | TBA | User-selected translation model |
 | Microphone capture | Windows browser | `getUserMedia` → streamed to the backend over the proxied WebSocket |
 | Computer audio capture | Windows native companion | WASAPI loopback → streamed to `/ws/ingest` through the proxy |
+| Windows voices (Talkie) | Windows native companion | SAPI text-to-speech answered over `/ws/companion`; the browser plays the WAV |
 
 - The UI is published at `http://localhost:8080` on **Windows loopback
   only** (`127.0.0.1:${APP_PORT}`). Do not expose it to the LAN.
@@ -126,6 +127,24 @@ speaker output. Capture happens on Windows and streams to the backend:
 Apple Silicon choices are disabled in this deployment: a WSL2 Linux
 container has no Metal access. The macOS deployment (Section 14 / the
 [macOS guide](DEPLOY_MACOS.md)) is a separate, native installation.
+
+### Talkie (two-way interpreter) on Windows
+
+Talkie needs the microphone (browser) **and** computer audio (companion)
+at the same time, plus a voice to speak translations:
+
+- Start the companion before or after pressing Start; it keeps a control
+  connection (`/ws/companion`) open and reconnects automatically. While it
+  is connected, **Windows voice (capture companion)** appears under
+  Talkie → Voice output with the SAPI voices installed on Windows
+  (Settings → Time & Language → Speech → Add voices for more languages).
+  The companion needs `pywin32` (in `requirements.txt`).
+- The backend never plays audio: the companion returns WAV bytes to the
+  container, and the browser plays them on the output device chosen per
+  direction (Chrome/Edge). Route "to them" to a virtual cable (e.g.
+  VB-CABLE) selected as the meeting app's microphone.
+- Without the companion, the **browser voice** (Edge/Chrome with the
+  Microsoft voices) still works but plays on the default output only.
 
 ## Persistent data and lifecycle
 

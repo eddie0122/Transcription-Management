@@ -12,8 +12,10 @@ const state = {
   selectedFiles: [],        // {file, duration}
   eventsWs: null,
   live: null,               // active live session controller
+  talkie: null,             // active talkie (two-way interpreter) controller
   liveResultsJob: null,
   modelDownloads: new Map(),// "engine/model" -> {done,total,status}
+  outputs: [],              // audiooutput devices (Chrome/Edge)
 };
 
 /* ---------------- utilities ---------------- */
@@ -90,6 +92,7 @@ async function init() {
   listMicrophones();
   updateSourceHint();
   updateLimitsText();
+  initTalkie();
 }
 
 function updateLimitsText() {
@@ -149,6 +152,7 @@ function wireStaticHandlers() {
   });
   $("tab-files").addEventListener("click", () => switchMode("files"));
   $("tab-live").addEventListener("click", () => switchMode("live"));
+  $("tab-talkie").addEventListener("click", () => switchMode("talkie"));
   $("tab-history").addEventListener("click", () => switchMode("history"));
   $("btn-settings").addEventListener("click", openSettings);
   $("btn-settings-close").addEventListener("click", () => $("settings-modal").close());
@@ -167,16 +171,23 @@ function wireStaticHandlers() {
   wireUpload();
   wireStartProcessing();
   wireLiveControls();
+  wireTalkieControls();
   wireSettingsControls();
   const syncSummaries = ["f-language", "f-model", "f-quality", "f-device", "f-translate",
     "f-target", "f-preset", "l-language", "l-model", "l-quality", "l-device",
-    "l-translate", "l-target", "l-preset"];
+    "l-translate", "l-target", "l-preset", "t-source", "t-target", "t-model",
+    "t-quality", "t-device", "t-preset", "t-tts-engine", "t-voice-them", "t-voice-me"];
   syncSummaries.forEach((id) => $(id).addEventListener("change", updateSummaries));
   $("f-device").addEventListener("change", populateModelSelects);
   $("l-device").addEventListener("change", populateModelSelects);
+  $("t-device").addEventListener("change", populateModelSelects);
   window.addEventListener("beforeunload", (e) => {
-    if (state.live) { e.preventDefault(); e.returnValue = ""; }
+    if (state.live || state.talkie) { e.preventDefault(); e.returnValue = ""; }
   });
+}
+
+function activeSessionMode() {
+  return state.live ? "live" : (state.talkie ? "talkie" : null);
 }
 
 function switchMode(mode) {
@@ -184,13 +195,16 @@ function switchMode(mode) {
   // recording chip keeps Stop reachable from everywhere.
   for (const [m, view, tab] of [["files", "view-files", "tab-files"],
                                 ["live", "view-live", "tab-live"],
+                                ["talkie", "view-talkie", "tab-talkie"],
                                 ["history", "view-history", "tab-history"]]) {
     const active = mode === m;
     $(view).hidden = !active;
     $(tab).classList.toggle("active", active);
     $(tab).setAttribute("aria-selected", String(active));
   }
-  $("global-rec").hidden = !(state.live && mode !== "live");
+  state.currentMode = mode;
+  const running = activeSessionMode();
+  $("global-rec").hidden = !(running && mode !== running);
 }
 
 /* ---------------- selects ---------------- */
@@ -232,6 +246,8 @@ function populateLanguageSelects() {
   };
   buildTargets("f-target");
   buildTargets("l-target");
+  buildTargets("t-source");
+  buildTargets("t-target");
 }
 
 function activeEngineFor(deviceSel) {
@@ -245,7 +261,7 @@ function activeEngineFor(deviceSel) {
 }
 
 function populateDeviceSelects() {
-  for (const sel of ["f-device", "l-device"]) {
+  for (const sel of ["f-device", "l-device", "t-device"]) {
     const el = $(sel);
     const current = el.value;
     el.innerHTML = "";
@@ -267,7 +283,8 @@ function populateDeviceSelects() {
 
 function populateModelSelects() {
   for (const [sel, deviceSel, hintId] of [["f-model", "f-device", "f-model-hint"],
-                                          ["l-model", "l-device", "l-model-hint"]]) {
+                                          ["l-model", "l-device", "l-model-hint"],
+                                          ["t-model", "t-device", "t-model-hint"]]) {
     const engine = activeEngineFor(deviceSel);
     const el = $(sel);
     const current = el.value;
@@ -330,7 +347,7 @@ function populateComputeTypes() {
 }
 
 function populatePresetSelects() {
-  for (const sel of ["f-preset", "l-preset", "s-default-preset"]) {
+  for (const sel of ["f-preset", "l-preset", "t-preset", "s-default-preset"]) {
     const el = $(sel);
     const current = el.value;
     el.innerHTML = sel === "s-default-preset" ? '<option value="">None</option>' : "";
@@ -350,7 +367,7 @@ function applyDefaults() {
   const d = state.settings.defaults || {};
   if (d.language !== undefined) { $("f-language").value = d.language; $("l-language").value = d.language; }
   const dp = state.settings.default_preset_id;
-  if (dp) { ["f-preset", "l-preset"].forEach((s) => { if ([...$(s).options].some((o) => o.value === dp && !o.disabled)) $(s).value = dp; }); }
+  if (dp) { ["f-preset", "l-preset", "t-preset"].forEach((s) => { if ([...$(s).options].some((o) => o.value === dp && !o.disabled)) $(s).value = dp; }); }
   $("s-default-lang").value = d.language || "";
   $("s-default-preset").value = dp || "";
   $("retention-days").value = state.settings.retention_days;
@@ -373,6 +390,10 @@ function updateTranslationStatusLines() {
       el.textContent = `Segments will be sent to “${preset.name}” (${preset.base_url}). Provider-side retention is independent of local automatic deletion.`;
     }
   }
+  const tp = state.presets.find((p) => p.id === $("t-preset").value);
+  $("t-translation-status").textContent = tp
+    ? `Every utterance is sent to “${tp.name}” (${tp.base_url}) for translation. Provider-side retention is independent of local automatic deletion.`
+    : "Talkie needs a configured LLM preset: create one under Settings → LLM presets (TBA presets cannot be used).";
 }
 
 function updateSummaries() {
@@ -388,7 +409,14 @@ function updateSummaries() {
   };
   $("files-translation-summary").textContent = tsum("f-translate", "f-target", "f-preset");
   $("live-translation-summary").textContent = tsum("l-translate", "l-target", "l-preset");
+  const tp = state.presets.find((x) => x.id === $("t-preset").value);
+  $("talkie-engine-summary").textContent =
+    `${$("t-model").value || "no model"} · ${$("t-quality").value} · ${$("t-device").value} · ${tp ? tp.name : "no LLM preset"}`;
+  const engineOpt = $("t-tts-engine").selectedOptions[0];
+  $("talkie-voice-summary").textContent =
+    `${engineOpt ? engineOpt.textContent : "—"} · them: ${$("t-voice-them").selectedOptions[0]?.textContent || "auto"} · me: ${$("t-voice-me").selectedOptions[0]?.textContent || "auto"}`;
   updateTranslationStatusLines();
+  updateTalkieHint();
 }
 
 /* ---------------- From Files: upload ---------------- */
@@ -673,9 +701,14 @@ async function openReview(jobId) {
     (s.detected_language ? ` · source: ${langs[s.detected_language] || s.detected_language}` : "") +
     (s.translate ? ` · translated to ${langs[s.target_language] || s.target_language}` : "");
   $("review-downloads").innerHTML = artifactButtons(job);
+  if (job.kind === "talkie") {
+    $("review-meta").textContent =
+      `${fmtDate(job.created_at)} · ${s.effective_engine || ""} · Talkie: ` +
+      `${langs[s.source_language] || s.source_language} ↔ ${langs[s.target_language] || s.target_language}`;
+  }
   const wrap = $("review-rows");
   wrap.innerHTML = "";
-  const showT = !!s.translate;
+  const showT = !!s.translate || job.kind === "talkie";
   for (const seg of segments) {
     wrap.appendChild(segmentRow(seg, showT));
   }
@@ -698,10 +731,16 @@ function segmentRow(seg, showTranslation) {
       t = `<div class="seg-cell"></div>`;
     }
   }
+  const speaker = seg.speaker ? speakerChip(seg.speaker) + " " : "";
   row.innerHTML =
     `<div class="seg-time">${fmtClock(seg.start_ms)}</div>` +
-    `<div class="seg-cell"><div class="seg-label">Original</div><div class="seg-text">${esc(seg.text)}</div></div>` + t;
+    `<div class="seg-cell"><div class="seg-label">${speaker}Original</div><div class="seg-text">${esc(seg.text)}</div></div>` + t;
   return row;
+}
+
+const SPEAKER_LABEL = { me: "Me", them: "Them" };
+function speakerChip(speaker) {
+  return `<span class="chip ${esc(speaker)}">${esc(SPEAKER_LABEL[speaker] || speaker)}</span>`;
 }
 
 /* ---------------- Real Time mode ---------------- */
@@ -731,15 +770,21 @@ async function listMicrophones() {
   try {
     const devices = await navigator.mediaDevices.enumerateDevices();
     const mics = devices.filter((d) => d.kind === "audioinput");
-    const el = $("l-mic");
-    el.innerHTML = "";
-    mics.forEach((m, i) => {
-      const o = document.createElement("option");
-      o.value = m.deviceId;
-      o.textContent = m.label || `Microphone ${i + 1}`;
-      el.appendChild(o);
-    });
-    if (!mics.length) el.innerHTML = '<option value="">No microphone found</option>';
+    for (const id of ["l-mic", "t-mic"]) {
+      const el = $(id);
+      const current = el.value;
+      el.innerHTML = "";
+      mics.forEach((m, i) => {
+        const o = document.createElement("option");
+        o.value = m.deviceId;
+        o.textContent = m.label || `Microphone ${i + 1}`;
+        el.appendChild(o);
+      });
+      if (!mics.length) el.innerHTML = '<option value="">No microphone found</option>';
+      if ([...el.options].some((o) => o.value === current)) el.value = current;
+    }
+    state.outputs = devices.filter((d) => d.kind === "audiooutput");
+    populateOutputSelects();
   } catch (e) { /* enumeration denied */ }
 }
 
@@ -747,7 +792,7 @@ function wireLiveControls() {
   $("l-source").addEventListener("change", updateSourceHint);
   $("btn-live-start").addEventListener("click", startLive);
   $("btn-live-stop").addEventListener("click", stopLive);
-  $("global-stop").addEventListener("click", stopLive);
+  $("global-stop").addEventListener("click", () => { stopLive(); stopTalkie(); });
   const rows = $("live-rows");
   rows.addEventListener("scroll", () => {
     const away = rows.scrollTop > 40;
@@ -939,7 +984,7 @@ function startMicPipeline(live) {
       if (live.ws.readyState === WebSocket.OPEN) {
         live.ws.send(JSON.stringify({ type: "device_lost", message: "The microphone was disconnected. Recording of received audio is preserved; stop the session or reconnect the device." }));
       }
-      $("l-error").textContent = "Microphone disconnected.";
+      $(live.errorEl || "l-error").textContent = "Microphone disconnected.";
       announce("Microphone disconnected");
     };
   });
@@ -1042,6 +1087,597 @@ function teardownLive(live) {
   $("global-rec").hidden = true;
   setLiveControlsLocked(false);
   updateSourceHint();
+}
+
+/* ---------------- Talkie mode (two-way interpreter) ---------------- */
+
+const TALKIE_PREFS_KEY = "talkie.prefs";
+const TALKIE_FIELDS = ["t-source", "t-target", "t-mic", "t-model", "t-quality", "t-device",
+  "t-preset", "t-gate", "t-silence", "t-maxchunk", "t-partial", "t-tts-engine", "t-rate",
+  "t-voice-them", "t-voice-me", "t-sink-them", "t-sink-me"];
+const BCP47 = { en: "en-US", ko: "ko-KR", ja: "ja-JP", zh: "zh-CN", yue: "zh-HK", es: "es-ES",
+  fr: "fr-FR", de: "de-DE", pt: "pt-BR", ru: "ru-RU", vi: "vi-VN", id: "id-ID", th: "th-TH",
+  ar: "ar-SA", hi: "hi-IN", it: "it-IT", nl: "nl-NL", pl: "pl-PL", tr: "tr-TR", uk: "uk-UA" };
+
+const tts = {
+  queue: [], playing: false, current: null, audio: null, browserVoices: [],
+  gateNotify: null,   // function(state) — reports playing/idle to the backend
+};
+
+function langName(code) { return (state.system && state.system.languages[code]) || code || "—"; }
+
+function loadTalkiePrefs() {
+  try { return JSON.parse(localStorage.getItem(TALKIE_PREFS_KEY) || "{}"); } catch (e) { return {}; }
+}
+
+function saveTalkiePrefs() {
+  const prefs = {};
+  for (const id of TALKIE_FIELDS) {
+    const el = $(id);
+    prefs[id] = el.type === "checkbox" ? el.checked : el.value;
+  }
+  try { localStorage.setItem(TALKIE_PREFS_KEY, JSON.stringify(prefs)); } catch (e) { /* private mode */ }
+}
+
+function applyTalkiePrefs(ids) {
+  // Device/voice/sink ids are browser-bound, so preferences live in this
+  // browser rather than in the server-side defaults.
+  const prefs = loadTalkiePrefs();
+  for (const id of ids || TALKIE_FIELDS) {
+    if (!(id in prefs)) continue;
+    const el = $(id);
+    if (el.type === "checkbox") { el.checked = !!prefs[id]; continue; }
+    if (el.tagName === "SELECT") {
+      if ([...el.options].some((o) => o.value === prefs[id] && !o.disabled)) el.value = prefs[id];
+    } else {
+      el.value = prefs[id];
+    }
+  }
+}
+
+function initTalkie() {
+  applyTalkiePrefs();
+  if (!loadTalkiePrefs()["t-source"]) {
+    // Sensible first-run pair: browser language as mine, English as theirs.
+    const mine = (navigator.language || "en").split("-")[0];
+    if ([...$("t-source").options].some((o) => o.value === mine)) $("t-source").value = mine;
+    $("t-target").value = mine === "en" ? "ko" : "en";
+  }
+  loadTtsEngines();
+  if (window.speechSynthesis) {
+    const refresh = () => { tts.browserVoices = speechSynthesis.getVoices(); populateVoiceSelects(); };
+    speechSynthesis.addEventListener("voiceschanged", refresh);
+    refresh();
+  }
+  populateOutputSelects();
+  updateTalkieHint();
+  updateSummaries();
+}
+
+async function loadTtsEngines() {
+  try {
+    const r = await api("/api/tts/voices");
+    state.system.tts = r.engines;
+  } catch (e) { /* keep whatever /api/system reported */ }
+  populateTtsEngineSelect();
+  populateVoiceSelects();
+  updateSummaries();
+}
+
+function populateTtsEngineSelect() {
+  const el = $("t-tts-engine");
+  const current = el.value;
+  const info = (state.system && state.system.tts) || {};
+  el.innerHTML = "";
+  const labels = { browser: "Browser voice", macos_say: "macOS system voice",
+                   companion: "Windows voice (capture companion)" };
+  for (const id of ["browser", "macos_say", "companion"]) {
+    const eng = info[id] || { available: id === "browser" };
+    const o = document.createElement("option");
+    o.value = id;
+    o.textContent = labels[id] + (eng.available ? "" : " — unavailable");
+    o.disabled = !eng.available;
+    el.appendChild(o);
+  }
+  const prefs = loadTalkiePrefs();
+  const wanted = current || prefs["t-tts-engine"];
+  if (wanted && [...el.options].some((o) => o.value === wanted && !o.disabled)) el.value = wanted;
+  else el.value = info.macos_say && info.macos_say.available ? "macos_say"
+    : (info.companion && info.companion.available ? "companion" : "browser");
+  const eng = info[el.value] || {};
+  $("t-tts-engine-hint").textContent = eng.detail || "";
+}
+
+function voicesFor(engine, language) {
+  if (engine === "browser") {
+    return tts.browserVoices
+      .filter((v) => (v.lang || "").toLowerCase().split(/[-_]/)[0] === language)
+      .map((v) => ({ id: v.voiceURI, label: `${v.name} (${v.lang})` }));
+  }
+  const eng = (state.system.tts || {})[engine];
+  return ((eng && eng.voices) || []).filter((v) => v.language === language);
+}
+
+function populateVoiceSelects() {
+  const engine = $("t-tts-engine").value;
+  for (const [sel, langSel] of [["t-voice-them", "t-target"], ["t-voice-me", "t-source"]]) {
+    const el = $(sel);
+    const current = el.value;
+    const lang = $(langSel).value;
+    el.innerHTML = `<option value="">Auto (first ${esc(langName(lang))} voice)</option>`;
+    for (const v of voicesFor(engine, lang)) {
+      const o = document.createElement("option");
+      o.value = v.id; o.textContent = v.label;
+      el.appendChild(o);
+    }
+    if ([...el.options].some((o) => o.value === current)) el.value = current;
+  }
+  applyTalkiePrefs(["t-voice-them", "t-voice-me"]);
+  const info = (state.system.tts || {})[engine] || {};
+  $("t-tts-engine-hint").textContent = info.detail || "";
+  const routable = engine !== "browser" && typeof HTMLMediaElement.prototype.setSinkId === "function";
+  $("t-sink-them-wrap").hidden = !routable;
+  $("t-sink-me-wrap").hidden = !routable;
+  $("t-sink-hint").textContent = engine === "browser"
+    ? "The browser voice always plays on the default output device. Choose a system voice to route each direction to its own output (e.g. a virtual device for the call, headphones for you)."
+    : (routable ? "" : "This browser cannot choose an output device (setSinkId unsupported); use Chrome or Edge for per-direction routing.");
+}
+
+function populateOutputSelects() {
+  for (const sel of ["t-sink-them", "t-sink-me"]) {
+    const el = $(sel);
+    const current = el.value;
+    el.innerHTML = '<option value="">Default output</option>';
+    state.outputs.forEach((d, i) => {
+      const o = document.createElement("option");
+      o.value = d.deviceId; o.textContent = d.label || `Output ${i + 1}`;
+      el.appendChild(o);
+    });
+    if ([...el.options].some((o) => o.value === current)) el.value = current;
+  }
+  applyTalkiePrefs(["t-sink-them", "t-sink-me"]);
+}
+
+function updateTalkieHint() {
+  if (!state.system) return;
+  const cap = state.system.capture.computer_audio;
+  const hint = $("t-source-hint");
+  const src = langName($("t-source").value), tgt = langName($("t-target").value);
+  $("banner-them-lang").textContent = `(${tgt})`;
+  $("banner-me-lang").textContent = `(${src})`;
+  let text = `You speak ${src} into the microphone → spoken to them in ${tgt}. They speak ${tgt} in the call (computer audio) → spoken to you in ${src}. Wear headphones so the microphone does not pick up the call. `;
+  if (cap.mode === "native") text += "Computer audio uses the native capture helper (Screen & System Audio Recording permission).";
+  else if (cap.mode === "companion") text += "Computer audio and Windows voices come from the capture companion running on the Windows host.";
+  else text += "Computer audio is unavailable: " + cap.reason;
+  if (!state.talkie) hint.textContent = text;
+  $("btn-talkie-start").disabled = !state.system.capture.talkie && !state.talkie;
+}
+
+function wireTalkieControls() {
+  $("btn-talkie-start").addEventListener("click", startTalkie);
+  $("btn-talkie-stop").addEventListener("click", stopTalkie);
+  for (const id of TALKIE_FIELDS) $(id).addEventListener("change", saveTalkiePrefs);
+  $("t-source").addEventListener("change", () => { populateVoiceSelects(); updateTalkieHint(); });
+  $("t-target").addEventListener("change", () => { populateVoiceSelects(); updateTalkieHint(); });
+  $("t-tts-engine").addEventListener("change", () => { populateVoiceSelects(); saveTalkiePrefs(); });
+  $("btn-test-them").addEventListener("click", () => testVoice("them"));
+  $("btn-test-me").addEventListener("click", () => testVoice("me"));
+  $("btn-replay-them").addEventListener("click", () => replayBanner("them"));
+  $("btn-replay-me").addEventListener("click", () => replayBanner("me"));
+  const rows = $("t-rows");
+  rows.addEventListener("scroll", () => {
+    const away = rows.scrollTop > 40;
+    $("btn-t-return-latest").hidden = !away;
+    if (state.talkie) state.talkie.scrolledAway = away;
+  });
+  $("btn-t-return-latest").addEventListener("click", () => {
+    rows.scrollTop = 0;
+    $("btn-t-return-latest").hidden = true;
+    if (state.talkie) state.talkie.scrolledAway = false;
+  });
+}
+
+function setTalkieControlsLocked(locked) {
+  ["t-source", "t-target", "t-mic", "t-model", "t-quality", "t-device", "t-preset", "t-gate",
+   "t-silence", "t-maxchunk", "t-partial"].forEach((id) => { $(id).disabled = locked; });
+}
+
+function collectTalkieSettings() {
+  const num = (id) => { const x = $(id).value; return x === "" ? undefined : Number(x); };
+  const advanced = {};
+  if (num("t-silence") !== undefined) advanced.silence_ms = num("t-silence");
+  else advanced.silence_ms = 700;
+  if (num("t-maxchunk") !== undefined) advanced.max_chunk_s = num("t-maxchunk");
+  if (num("t-partial") !== undefined) advanced.partial_interval_s = num("t-partial");
+  return {
+    source_language: $("t-source").value,
+    target_language: $("t-target").value,
+    device: $("t-device").value,
+    model: $("t-model").value,
+    quality_preset: $("t-quality").value,
+    llm_preset_id: $("t-preset").value || null,
+    gate_while_speaking: $("t-gate").checked,
+    advanced,
+  };
+}
+
+async function startTalkie() {
+  const err = $("t-error");
+  err.textContent = "";
+  if (state.live) { err.textContent = "Stop the Real Time session first; one session runs at a time."; return; }
+  const settings = collectTalkieSettings();
+  if (!settings.model) {
+    err.textContent = "No model is available for the selected hardware. Download one in Settings → Transcription → Models.";
+    return;
+  }
+  if (settings.source_language === settings.target_language) {
+    err.textContent = "Choose two different languages.";
+    return;
+  }
+  const preset = state.presets.find((p) => p.id === settings.llm_preset_id);
+  if (!preset || !preset.configured) {
+    err.textContent = "Talkie needs a configured LLM preset for translation. Create one under Settings → LLM presets (TBA presets cannot be used).";
+    return;
+  }
+  let mic;
+  try {
+    const constraints = { audio: $("t-mic").value ? { deviceId: { exact: $("t-mic").value } } : true };
+    mic = await navigator.mediaDevices.getUserMedia(constraints);
+  } catch (e) {
+    err.textContent = e.name === "NotAllowedError"
+      ? "Microphone permission was denied. Allow microphone access for this site in the browser settings, then try again."
+      : `Could not open the microphone: ${e.message}`;
+    return;
+  }
+  listMicrophones(); // labels (and output devices) become visible after permission
+
+  const proto = location.protocol === "https:" ? "wss:" : "ws:";
+  const ws = new WebSocket(`${proto}//${location.host}/ws/talkie`);
+  ws.binaryType = "arraybuffer";
+  const talkie = {
+    ws, mic, source: "microphone", paused: false, scrolledAway: false, segments: new Map(),
+    startedAt: Date.now(), timerInterval: null, audioCtx: null, stopping: false,
+    errorEl: "t-error", settings, latest: { them: null, me: null },
+  };
+  state.talkie = talkie;
+  tts.gateNotify = (s) => {
+    if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: "tts", state: s }));
+  };
+  ws.onopen = () => ws.send(JSON.stringify({ type: "start", settings }));
+  ws.onmessage = (ev) => handleTalkieMessage(talkie, ev);
+  ws.onclose = () => {
+    if (state.talkie === talkie && !talkie.stopping) {
+      err.textContent = "Connection to the backend was lost. The session was preserved as interrupted; see Previous jobs.";
+      teardownTalkie(talkie);
+    }
+  };
+  $("talkie-empty").hidden = true;
+  $("t-rows").innerHTML = "";
+  $("talkie-results-panel").hidden = true;
+  for (const d of ["them", "me"]) {
+    $(`banner-${d}-text`).textContent = d === "them" ? "Waiting for you to speak…" : "Waiting for the other person…";
+    $(`banner-${d}-text`).classList.add("placeholder");
+    $(`banner-${d}-state`).textContent = "";
+    $(`btn-replay-${d}`).hidden = true;
+  }
+}
+
+function setTalkieChip(cls, text) {
+  const chip = $("talkie-status-chip");
+  chip.hidden = false;
+  chip.className = "chip " + cls;
+  chip.textContent = text;
+}
+
+function handleTalkieMessage(talkie, ev) {
+  let msg;
+  try { msg = JSON.parse(ev.data); } catch (e) { return; }
+  switch (msg.type) {
+    case "status":
+      if (msg.state === "recording" && !talkie.recording && msg.job_id) {
+        talkie.recording = true;
+        talkie.jobId = msg.job_id;
+        onTalkieStarted(talkie, msg.engine);
+      } else if (msg.detail === "waiting_companion") {
+        setTalkieChip("warn", msg.message);
+      } else if (msg.state === "stopping") {
+        setTalkieChip("run", "Finishing — flushing buffered speech and pending translation");
+      }
+      break;
+    case "level": {
+      const pct = Math.min(100, Math.round(msg.rms * 400));
+      $(msg.channel === "system" ? "t-level-them" : "t-level-me").style.width = pct + "%";
+      const elapsed = fmtClock(msg.elapsed_ms);
+      $("t-timer").textContent = elapsed;
+      $("global-rec-time").textContent = elapsed;
+      if (msg.backlog_s) setTalkieChip("warn", `Processing delay: ${msg.backlog_s}s of audio buffered`);
+      else if (talkie.paused) { talkie.paused = false; setTalkieChip("rec", "Listening"); }
+      break;
+    }
+    case "partial":
+      upsertTalkieRow(talkie, msg.segment, true);
+      break;
+    case "final":
+      upsertTalkieRow(talkie, msg.segment, false);
+      break;
+    case "retract": {
+      const row = talkie.segments.get(msg.index);
+      if (row) { row.remove(); talkie.segments.delete(msg.index); }
+      break;
+    }
+    case "translation":
+      applyTalkieTranslation(talkie, msg);
+      break;
+    case "warning":
+      setTalkieChip("warn", msg.message);
+      break;
+    case "error":
+      $("t-error").textContent = msg.message;
+      announce("Error: " + msg.message);
+      if (msg.code === "overload") { talkie.paused = true; setTalkieChip("err", "Paused — processing backlog"); }
+      if (!msg.recoverable) stopTalkie();
+      break;
+    case "stopped":
+      talkie.stopping = true;
+      onTalkieStopped(talkie, msg);
+      break;
+  }
+}
+
+function onTalkieStarted(talkie, engine) {
+  $("btn-talkie-start").hidden = true;
+  $("btn-talkie-stop").hidden = false;
+  $("t-recstate").textContent = "Interpreting";
+  $("t-recstate").classList.add("recording");
+  setTalkieChip("rec", "Listening");
+  setTalkieControlsLocked(true);
+  announce("Talkie session started");
+  $("t-source-hint").textContent = `Session running with ${engine}. ${langName(talkie.settings.source_language)} ↔ ${langName(talkie.settings.target_language)}.`;
+  startMicPipeline(talkie);
+  talkie.timerInterval = setInterval(() => {
+    if ($("t-timer").textContent === "0:00") {
+      $("t-timer").textContent = fmtDuration((Date.now() - talkie.startedAt) / 1000);
+    }
+  }, 1000);
+  if (state.currentMode !== "talkie") $("global-rec").hidden = false;
+}
+
+function directionOf(speaker) { return speaker === "me" ? "them" : "me"; }
+
+function upsertTalkieRow(talkie, seg, isPartial) {
+  const rows = $("t-rows");
+  let row = talkie.segments.get(seg.index);
+  if (!row) {
+    row = document.createElement("div");
+    row.dataset.index = seg.index;
+    talkie.segments.set(seg.index, row);
+    const prevHeight = rows.scrollHeight;
+    rows.prepend(row); // newest first
+    if (talkie.scrolledAway) rows.scrollTop += rows.scrollHeight - prevHeight;
+  }
+  const s = talkie.settings;
+  const spokenLang = seg.speaker === "me" ? s.source_language : s.target_language;
+  const intoLang = seg.speaker === "me" ? s.target_language : s.source_language;
+  row.className = `seg-row talkie ${esc(seg.speaker)}` + (isPartial ? " partial" : "");
+  row.innerHTML =
+    `<div class="seg-time">${fmtClock(seg.start_ms)}</div>` +
+    `<div class="seg-speaker">${speakerChip(seg.speaker)}<span class="seg-speak" data-role="speak"></span></div>` +
+    `<div class="seg-cell"><div class="seg-label">${isPartial ? "Provisional" : "Said"} · ${esc(langName(spokenLang))}</div>` +
+    `<div class="seg-text">${esc(seg.text)}</div></div>` +
+    `<div class="seg-cell"><div class="seg-label">To ${directionOf(seg.speaker)} · ${esc(langName(intoLang))}</div>` +
+    `<div class="seg-tstatus">${isPartial ? "—" : "Translating…"}</div></div>`;
+}
+
+function applyTalkieTranslation(talkie, msg) {
+  const row = talkie.segments.get(msg.seg_index);
+  if (!row) return;
+  const cell = row.children[3];
+  const label = cell.querySelector(".seg-label").outerHTML;
+  const direction = directionOf(msg.speaker);
+  if (msg.status !== "done") {
+    cell.innerHTML = `${label}<div class="seg-tstatus err">Not translated — ${esc(msg.error || "error")}</div>`;
+    return;
+  }
+  cell.innerHTML = `${label}<div class="seg-text">${esc(msg.text)}</div>`;
+  const item = { text: msg.text, language: msg.language, direction, segIndex: msg.seg_index, row };
+  talkie.latest[direction] = item;
+  showBanner(direction, item, "Queued");
+  if (msg.speak) ttsEnqueue(item);
+}
+
+function showBanner(direction, item, stateText) {
+  const t = $(`banner-${direction}-text`);
+  t.textContent = item.text;
+  t.classList.remove("placeholder");
+  const st = $(`banner-${direction}-state`);
+  st.textContent = stateText;
+  st.className = "speak-state" + (stateText === "Speaking…" ? " speaking" : (stateText.startsWith("Not spoken") ? " err" : ""));
+  $(`btn-replay-${direction}`).hidden = false;
+}
+
+function replayBanner(direction) {
+  const t = state.talkie && state.talkie.latest[direction];
+  if (t) ttsEnqueue(Object.assign({}, t, { replay: true }));
+}
+
+/* ---- TTS playback queue: one utterance at a time, browser-owned ---- */
+
+function setSpeakStatus(item, text, cls) {
+  if (item.row) {
+    const el = item.row.querySelector('[data-role="speak"]');
+    if (el) {
+      el.className = "seg-speak" + (cls ? " " + cls : "");
+      el.textContent = text;
+      if (text === "Spoken" || cls === "err") {
+        const b = document.createElement("button");
+        b.className = "btn btn-sm btn-ghost"; b.textContent = "Replay";
+        b.addEventListener("click", () => ttsEnqueue(Object.assign({}, item, { replay: true })));
+        el.appendChild(b);
+      }
+    }
+  }
+  // The banner tracks the latest utterance per direction (replays are copies
+  // with the same segment index).
+  const latest = state.talkie && item.segIndex >= 0 && state.talkie.latest[item.direction];
+  if (latest && latest.segIndex === item.segIndex) showBanner(item.direction, item, text);
+}
+
+function ttsEnqueue(item) {
+  tts.queue.push(item);
+  setSpeakStatus(item, "Queued");
+  if (!tts.playing) ttsNext();
+}
+
+function ttsCancelAll() {
+  tts.queue = [];
+  if (tts.audio) { try { tts.audio.pause(); } catch (e) {} tts.audio = null; }
+  if (window.speechSynthesis) speechSynthesis.cancel();
+  if (tts.playing) { tts.playing = false; if (tts.gateNotify) tts.gateNotify("idle"); }
+}
+
+async function ttsNext() {
+  const item = tts.queue.shift();
+  if (!item) {
+    if (tts.playing) { tts.playing = false; if (tts.gateNotify) tts.gateNotify("idle"); }
+    return;
+  }
+  if (!tts.playing) { tts.playing = true; if (tts.gateNotify) tts.gateNotify("playing"); }
+  tts.current = item;
+  setSpeakStatus(item, "Speaking…", "speaking");
+  try {
+    await speakItem(item);
+    item.outcome = "ok";
+    setSpeakStatus(item, "Spoken");
+  } catch (e) {
+    item.outcome = "error";
+    item.error = e.message || String(e);
+    setSpeakStatus(item, "Not spoken — " + item.error, "err");
+  }
+  tts.current = null;
+  ttsNext();
+}
+
+function speakItem(item) {
+  const engine = $("t-tts-engine").value;
+  const rate = Number($("t-rate").value) || 1.0;
+  const voiceSel = item.direction === "them" ? "t-voice-them" : "t-voice-me";
+  const voice = $(voiceSel).value;
+  if (engine === "browser") return speakWithBrowser(item, voice, rate);
+  return speakWithBackend(engine, item, voice, rate);
+}
+
+function speakWithBrowser(item, voiceUri, rate) {
+  return new Promise((resolve, reject) => {
+    if (!window.speechSynthesis) { reject(new Error("this browser has no speech synthesis")); return; }
+    const u = new SpeechSynthesisUtterance(item.text);
+    u.lang = BCP47[item.language] || item.language;
+    u.rate = rate;
+    const voices = tts.browserVoices.length ? tts.browserVoices : speechSynthesis.getVoices();
+    let v = voiceUri ? voices.find((x) => x.voiceURI === voiceUri) : null;
+    if (!v) v = voices.find((x) => (x.lang || "").toLowerCase().split(/[-_]/)[0] === item.language);
+    if (v) u.voice = v;
+    else if (!voices.some((x) => (x.lang || "").toLowerCase().startsWith(item.language))) {
+      reject(new Error(`no ${langName(item.language)} voice installed in this browser`)); return;
+    }
+    u.onend = () => resolve();
+    u.onerror = (e) => (e.error === "interrupted" || e.error === "canceled") ? resolve() : reject(new Error(e.error || "speech error"));
+    speechSynthesis.speak(u);
+  });
+}
+
+async function speakWithBackend(engine, item, voice, rate) {
+  const res = await fetch("/api/tts", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ engine, text: item.text, voice: voice || null, rate }),
+  });
+  if (!res.ok) {
+    let msg = `HTTP ${res.status}`;
+    try { msg = (await res.json()).detail || msg; } catch (e) { /* non-JSON */ }
+    throw new Error(msg);
+  }
+  const url = URL.createObjectURL(await res.blob());
+  const audio = new Audio(url);
+  tts.audio = audio;
+  const sinkId = $(item.direction === "them" ? "t-sink-them" : "t-sink-me").value;
+  if (sinkId && typeof audio.setSinkId === "function") {
+    try { await audio.setSinkId(sinkId); }
+    catch (e) { URL.revokeObjectURL(url); throw new Error(`output device unavailable (${e.message})`); }
+  }
+  try {
+    await new Promise((resolve, reject) => {
+      audio.onended = resolve;
+      audio.onerror = () => reject(new Error("playback failed"));
+      audio.onpause = () => { if (audio.currentTime < audio.duration) resolve(); }; // canceled
+      audio.play().catch(reject);
+    });
+  } finally {
+    URL.revokeObjectURL(url);
+    if (tts.audio === audio) tts.audio = null;
+  }
+}
+
+async function testVoice(direction) {
+  const out = $("t-tts-test-result");
+  const lang = $(direction === "them" ? "t-target" : "t-source").value;
+  const samples = { en: "This is a test of the interpreter voice.", ko: "통역 음성 테스트입니다.",
+    ja: "通訳音声のテストです。", zh: "这是口译语音测试。", es: "Esta es una prueba de la voz del intérprete.",
+    fr: "Ceci est un test de la voix de l’interprète.", de: "Dies ist ein Test der Dolmetscherstimme." };
+  out.textContent = "Speaking…";
+  const item = { text: samples[lang] || samples.en, language: lang, direction, segIndex: -1, row: null };
+  // Run through the queue so gating and output routing behave exactly as in a session.
+  ttsEnqueue(item);
+  await new Promise((resolve) => {
+    const check = setInterval(() => { if (item.outcome) { clearInterval(check); resolve(); } }, 150);
+  });
+  out.textContent = item.outcome === "ok" ? "✓ Played." : "✕ " + item.error;
+}
+
+function stopTalkie() {
+  const talkie = state.talkie;
+  if (!talkie || talkie.stopRequested) return;
+  talkie.stopRequested = true;
+  stopMicPipeline(talkie);
+  ttsCancelAll();
+  setTalkieChip("run", "Finishing — flushing buffered speech and pending translation");
+  if (talkie.ws.readyState === WebSocket.OPEN) {
+    talkie.ws.send(JSON.stringify({ type: "stop" }));
+  } else {
+    teardownTalkie(talkie);
+  }
+}
+
+function onTalkieStopped(talkie, msg) {
+  teardownTalkie(talkie);
+  announce("Talkie session stopped");
+  const results = $("talkie-results");
+  $("talkie-results-panel").hidden = false;
+  const fake = { id: msg.job_id, artifacts: msg.artifacts };
+  results.innerHTML = artifactButtons(fake) ||
+    '<p class="empty-state">No speech was recognized in this session.</p>';
+  if (msg.status === "completed_with_translation_errors") {
+    results.insertAdjacentHTML("beforeend",
+      `<p class="status-line">Some utterances were not translated. Open the Previous Jobs tab to retry translation.</p>`);
+  }
+}
+
+function teardownTalkie(talkie) {
+  talkie.stopping = true;
+  stopMicPipeline(talkie);
+  ttsCancelAll();
+  tts.gateNotify = null;
+  if (talkie.timerInterval) clearInterval(talkie.timerInterval);
+  if (talkie.ws.readyState === WebSocket.OPEN) talkie.ws.close();
+  state.talkie = null;
+  $("btn-talkie-start").hidden = false;
+  $("btn-talkie-stop").hidden = true;
+  $("t-recstate").textContent = "Not running";
+  $("t-recstate").classList.remove("recording");
+  $("talkie-status-chip").hidden = true;
+  $("t-level-me").style.width = "0%";
+  $("t-level-them").style.width = "0%";
+  $("global-rec").hidden = true;
+  setTalkieControlsLocked(false);
+  updateTalkieHint();
 }
 
 /* ---------------- settings modal ---------------- */
@@ -1258,18 +1894,21 @@ function renderHistory() {
     const li = document.createElement("li");
     const s = job.settings || {};
     const langs = state.system ? state.system.languages : {};
-    const langInfo = [
-      s.detected_language ? (langs[s.detected_language] || s.detected_language) : (s.language ? (langs[s.language] || s.language) : "auto"),
-      s.translate ? "→ " + (langs[s.target_language] || s.target_language) : null,
-    ].filter(Boolean).join(" ");
+    const langInfo = job.kind === "talkie"
+      ? `${langs[s.source_language] || s.source_language} ↔ ${langs[s.target_language] || s.target_language}`
+      : [
+        s.detected_language ? (langs[s.detected_language] || s.detected_language) : (s.language ? (langs[s.language] || s.language) : "auto"),
+        s.translate ? "→ " + (langs[s.target_language] || s.target_language) : null,
+      ].filter(Boolean).join(" ");
+    const kindLabel = { live: "Live session", talkie: "Talkie session" }[job.kind] || "File";
     const active = ["queued", "running", "recording"].includes(job.status);
     li.innerHTML =
       `<div class="job-row-top">${chipFor(job)}` +
       `<span class="job-name">${esc(job.display_name)}</span>` +
-      `<span class="job-stage">${job.kind === "live" ? "Live session" : "File"} · ${fmtDate(job.created_at)} · ${esc(langInfo)} · ${fmtBytes(job.storage_bytes)}</span>` +
+      `<span class="job-stage">${kindLabel} · ${fmtDate(job.created_at)} · ${esc(langInfo)} · ${fmtBytes(job.storage_bytes)}</span>` +
       `<span class="job-actions">` +
       ((job.artifacts || []).length ? `<button class="btn btn-sm" data-act="review">Review</button>` : "") +
-      (["completed", "completed_with_translation_errors"].includes(job.status) && s.translate
+      (["completed", "completed_with_translation_errors"].includes(job.status) && (s.translate || job.kind === "talkie")
         ? `<button class="btn btn-sm" data-act="retry-t">Retry translation</button>` : "") +
       `<button class="btn btn-sm btn-ghost" data-act="delete">${active ? "Cancel & delete" : "Delete"}</button></span></div>` +
       `<div class="artifact-row">${artifactButtons(job)}</div>` +

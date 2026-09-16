@@ -18,7 +18,7 @@ _conn: Optional[sqlite3.Connection] = None
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
-  kind TEXT NOT NULL,               -- 'file' | 'live'
+  kind TEXT NOT NULL,               -- 'file' | 'live' | 'talkie'
   display_name TEXT NOT NULL,
   status TEXT NOT NULL,             -- queued|running|completed|completed_with_translation_errors|failed|canceled|interrupted|recording
   stage TEXT NOT NULL DEFAULT '',   -- queued|preparing|transcribing|translating|exporting|done
@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS segments (
   translation TEXT,
   translation_status TEXT NOT NULL DEFAULT 'none',  -- none|pending|done|error
   translation_error TEXT NOT NULL DEFAULT '',
+  speaker TEXT NOT NULL DEFAULT '',                -- '' | 'me' | 'them' (talkie)
   PRIMARY KEY (job_id, seg_index)
 );
 CREATE TABLE IF NOT EXISTS presets (
@@ -78,7 +79,15 @@ def init() -> None:
         _conn.execute("PRAGMA journal_mode=WAL")
         _conn.execute("PRAGMA foreign_keys=ON")
         _conn.executescript(SCHEMA)
+        _migrate(_conn)
         _conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Additive schema changes for databases created by earlier versions."""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(segments)").fetchall()}
+    if "speaker" not in cols:
+        conn.execute("ALTER TABLE segments ADD COLUMN speaker TEXT NOT NULL DEFAULT ''")
 
 
 def _c() -> sqlite3.Connection:
@@ -168,15 +177,15 @@ def expired_jobs(now: Optional[float] = None) -> List[Dict[str, Any]]:
 # ---------------- segments ----------------
 
 def upsert_segment(job_id: str, seg_index: int, seg_id: str, start_ms: int,
-                   end_ms: int, text: str) -> None:
+                   end_ms: int, text: str, speaker: str = "") -> None:
     with _lock:
         _c().execute(
-            "INSERT INTO segments (job_id, seg_index, seg_id, start_ms, end_ms, text)"
-            " VALUES (?,?,?,?,?,?)"
+            "INSERT INTO segments (job_id, seg_index, seg_id, start_ms, end_ms, text, speaker)"
+            " VALUES (?,?,?,?,?,?,?)"
             " ON CONFLICT(job_id, seg_index) DO UPDATE SET"
             " seg_id=excluded.seg_id, start_ms=excluded.start_ms,"
-            " end_ms=excluded.end_ms, text=excluded.text",
-            (job_id, seg_index, seg_id, start_ms, end_ms, text),
+            " end_ms=excluded.end_ms, text=excluded.text, speaker=excluded.speaker",
+            (job_id, seg_index, seg_id, start_ms, end_ms, text, speaker),
         )
         _c().commit()
 

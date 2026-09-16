@@ -62,6 +62,22 @@ better accuracy).
   for the app that launched the backend (your terminal, typically). Grant it
   in System Settings → Privacy & Security, then start the session again.
   Denial produces a clear in-UI error, never a silent failure.
+- **Talkie** uses both at once: the browser microphone (you) and the
+  ScreenCaptureKit helper (the call's playback, i.e. the other person).
+
+## Voice output (Talkie)
+
+- **macOS system voice** synthesizes with the built-in `say` command; the
+  voices offered are those installed on the Mac (`say -v ?`). Add more
+  under System Settings → Accessibility → Spoken Content → System Voice →
+  Manage Voices (for example a Korean or Japanese voice).
+- Because the backend returns audio, the browser can play each direction on
+  its own output device. This needs Chrome or Edge (`setSinkId`); Safari
+  plays on the default output only. To feed the translation into a call,
+  install a virtual audio device such as BlackHole, route "to them" to it,
+  and pick it as the meeting app's microphone (see the README).
+- The **browser voice** engine needs no setup but always plays on the
+  default output.
 
 ## Configuration
 

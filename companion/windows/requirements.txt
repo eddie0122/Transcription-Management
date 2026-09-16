@@ -2,3 +2,4 @@ soundcard==0.4.4
 numpy==2.2.6
 websockets==14.2
 httpx==0.28.1
+pywin32==308; sys_platform == "win32"

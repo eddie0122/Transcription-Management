@@ -21,23 +21,37 @@ def _ts_vtt(ms: int) -> str:
     return _ts_srt(ms).replace(",", ".")
 
 
+SPEAKER_LABELS = {"me": "Me", "them": "Them"}
+
+
+def _line(seg: Dict[str, Any], field: str) -> str:
+    """Segment text for export; talkie segments carry a speaker prefix."""
+    text = (seg.get(field) or "").strip()
+    speaker = seg.get("speaker") or ""
+    if text and speaker:
+        return f"{SPEAKER_LABELS.get(speaker, speaker)}: {text}"
+    return text
+
+
 def _validated_cues(segments: List[Dict[str, Any]], field: str) -> List[Dict[str, Any]]:
-    """Monotonic, non-empty cues with a minimum visible duration."""
+    """Non-empty cues with a minimum visible duration, monotonic per speaker
+    (two talkie speakers may legitimately overlap in time)."""
     cues = []
-    last_end = 0
+    last_end: Dict[str, int] = {}
     for seg in segments:
-        text = (seg.get(field) or "").strip()
+        text = _line(seg, field)
         if not text:
             continue
-        start = max(int(seg["start_ms"]), last_end)
+        speaker = seg.get("speaker") or ""
+        start = max(int(seg["start_ms"]), last_end.get(speaker, 0))
         end = max(int(seg["end_ms"]), start + 200)
         cues.append({"start_ms": start, "end_ms": end, "text": text})
-        last_end = end
+        last_end[speaker] = end
     return cues
 
 
 def write_txt(segments: List[Dict[str, Any]], path: Path, field: str) -> Optional[Path]:
-    lines = [(s.get(field) or "").strip() for s in segments]
+    lines = [_line(s, field) for s in segments]
     lines = [ln for ln in lines if ln]
     if not lines:
         return None
@@ -85,6 +99,7 @@ def write_json(job: Dict[str, Any], segments: List[Dict[str, Any]], path: Path,
                 "start_ms": s["start_ms"],
                 "end_ms": s["end_ms"],
                 "text": s["text"],
+                "speaker": s.get("speaker") or "",
                 "translation": s.get("translation"),
                 "translation_status": s.get("translation_status", "none"),
                 "translation_error": s.get("translation_error", ""),

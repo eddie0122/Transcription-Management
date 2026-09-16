@@ -17,16 +17,17 @@ from urllib.parse import urlparse
 
 from fastapi import (FastAPI, File, Form, HTTPException, UploadFile, WebSocket,
                      WebSocketDisconnect)
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-from . import __version__, config, db, engines, media, retention, translate
+from . import __version__, config, db, engines, media, retention, translate, tts
 from .capture_macos import SystemAudioCapture, helper_status
 from .events import bus, job_event
 from .jobs import dir_size, job_dir, manager, retention_days
 from .languages import COMMON_TARGETS, WHISPER_LANGUAGES
 from .live import live_manager, repair_wav
 from .security import safe_child, sanitize_filename, secret_store
+from .talkie import TalkieSession
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s %(message)s")
@@ -40,9 +41,10 @@ def _recover_interrupted() -> None:
     accurately, and repair live recordings' WAV headers."""
     for job in db.list_jobs():
         if job["status"] in ACTIVE:
-            wav = job_dir(job["id"]) / "recording.wav"
-            if wav.is_file():
-                repair_wav(wav)
+            d = job_dir(job["id"])
+            if d.is_dir():
+                for wav in d.glob("recording*.wav"):
+                    repair_wav(wav)
             db.mark_terminal(
                 job["id"], "interrupted", retention_days(),
                 error="The application stopped while this job was in progress. "
@@ -107,10 +109,14 @@ def system():
     info = engines.detect(force=True)
     info = dict(info)
     info["decoders"] = media.decoder_info()
+    cap = helper_status()
     info["capture"] = {
-        "computer_audio": helper_status(),
+        "computer_audio": cap,
         "companion_ingest": True,
+        # Talkie needs the microphone (browser) plus computer audio.
+        "talkie": cap["mode"] in ("native", "companion"),
     }
+    info["tts"] = tts.engines_info()
     info["limits"] = {"max_upload_mb": config.MAX_UPLOAD_MB,
                       "max_duration_min": config.MAX_DURATION_MIN,
                       "supported_extensions": media.SUPPORTED_EXTENSIONS}
@@ -163,6 +169,28 @@ async def put_settings(body: Dict[str, Any]):
                     "affected": affected})
         await asyncio.to_thread(retention.apply_retention_change, days)
     return get_settings()
+
+
+# ---------------------------------------------------------------- tts
+
+@app.get("/api/tts/voices")
+def tts_voices():
+    return {"engines": tts.engines_info()}
+
+
+@app.post("/api/tts")
+async def tts_synthesize(body: Dict[str, Any]):
+    """Synthesize one utterance to WAV with a server-side engine. The browser
+    plays it (optionally on a chosen output device)."""
+    try:
+        wav = await tts.synthesize(str(body.get("engine") or ""), body.get("text"),
+                                   body.get("voice") or None, body.get("rate") or None)
+    except tts.TTSError as e:
+        status = 503 if e.category == "unavailable" else 400
+        return JSONResponse(status_code=status,
+                            content={"detail": str(e), "category": e.category})
+    return Response(content=wav, media_type="audio/wav",
+                    headers={"Cache-Control": "no-store"})
 
 
 # ---------------------------------------------------------------- presets
@@ -520,9 +548,148 @@ async def ws_ingest(ws: WebSocket):
                 break
             data = msg.get("bytes")
             if data and live_manager.session is not None:
-                live_manager.session.feed(data)
+                live_manager.session.feed_ingest(data)
     except WebSocketDisconnect:
         pass
+
+
+@app.websocket("/ws/talkie")
+async def ws_talkie(ws: WebSocket):
+    """Two-way interpreter session: browser microphone frames arrive here;
+    computer audio comes from the native helper (macOS) or the companion via
+    /ws/ingest. Text messages: start, tts {state}, device_lost, stop."""
+    if not _same_origin_ok(ws):
+        await ws.close(code=4403)
+        return
+    await ws.accept()
+    session: Optional[TalkieSession] = None
+    capture: Optional[SystemAudioCapture] = None
+    overload_notified = 0.0
+    try:
+        while True:
+            msg = await ws.receive()
+            if msg.get("type") == "websocket.disconnect":
+                raise WebSocketDisconnect()
+            if msg.get("bytes") is not None:
+                if session is not None:
+                    info = session.feed_mic(msg["bytes"])
+                    now = time.monotonic()
+                    if info.get("overload") and now - overload_notified > 3:
+                        overload_notified = now
+                        await ws.send_json({
+                            "type": "error", "recoverable": True, "code": "overload",
+                            "message": "Processing backlog exceeded the buffer limit. "
+                                       "Capture is paused; audio already received is "
+                                       "preserved. Resume once the backlog clears."})
+                continue
+            if msg.get("text") is None:
+                continue
+            try:
+                data = json.loads(msg["text"])
+            except ValueError:
+                continue
+            mtype = data.get("type")
+            if mtype == "start" and session is None:
+                settings = data.get("settings") or {}
+                status = helper_status()
+                settings["system_source"] = status["mode"]
+                if status["mode"] == "unavailable":
+                    await ws.send_json({"type": "error", "recoverable": True,
+                                        "message": "Talkie needs computer-audio capture "
+                                                   "for the other person's voice. " +
+                                                   status["reason"]})
+                    continue
+                try:
+                    session = await live_manager.begin(ws.send_json, settings, TalkieSession)
+                except engines.EngineError as e:
+                    await ws.send_json({"type": "error", "recoverable": True,
+                                        "message": str(e)})
+                    continue
+                if status["mode"] == "native":
+                    async def on_pcm(chunk, s=session):
+                        s.feed_system(chunk)
+
+                    async def on_error(message):
+                        await ws.send_json({"type": "error", "recoverable": True,
+                                            "code": "device_lost", "message": message})
+                    capture = SystemAudioCapture(on_pcm, on_error)
+                    try:
+                        await capture.start()
+                    except RuntimeError as e:
+                        await ws.send_json({"type": "error", "recoverable": True,
+                                            "message": str(e)})
+                        await live_manager.end(session)
+                        session, capture = None, None
+                else:
+                    await ws.send_json({
+                        "type": "status", "state": "recording",
+                        "detail": "waiting_companion",
+                        "message": "Waiting for the Windows capture companion. Run "
+                                   "companion/windows/capture_companion.py on the "
+                                   "Windows host; it streams the call's audio into "
+                                   "this session and provides Windows voices."})
+            elif mtype == "tts" and session is not None:
+                session.set_speaking(data.get("state") == "playing")
+            elif mtype == "device_lost" and session is not None:
+                await ws.send_json({"type": "error", "recoverable": True,
+                                    "code": "device_lost",
+                                    "message": data.get("message") or
+                                    "The audio input device was disconnected."})
+            elif mtype == "stop" and session is not None:
+                if capture:
+                    await capture.stop()
+                    capture = None
+                await live_manager.end(session)
+                session = None
+    except WebSocketDisconnect:
+        pass
+    finally:
+        if capture:
+            await capture.stop()
+        if session is not None:
+            await live_manager.end(session, reason="disconnect")
+
+
+@app.websocket("/ws/companion")
+async def ws_companion(ws: WebSocket):
+    """Control channel for the Windows companion: it announces its voices and
+    answers text-to-speech requests with WAV bytes (see companion/windows)."""
+    if ws.query_params.get("token") != config.SESSION_TOKEN:
+        await ws.close(code=4403)
+        return
+    await ws.accept()
+    token: Optional[int] = None
+    try:
+        while True:
+            msg = await ws.receive()
+            if msg.get("type") == "websocket.disconnect":
+                break
+            if msg.get("bytes") is not None:
+                data = msg["bytes"]
+                if len(data) > 32:
+                    tts.companion.resolve(data[:32].decode("ascii", "replace"), data[32:])
+                continue
+            if msg.get("text") is None:
+                continue
+            try:
+                data = json.loads(msg["text"])
+            except ValueError:
+                continue
+            mtype = data.get("type")
+            if mtype == "hello":
+                token = tts.companion.register(ws.send_json, data.get("voices") or [],
+                                               str(data.get("platform") or ""))
+                await ws.send_json({"type": "hello_ack", "tts_max_chars": tts.MAX_TEXT_CHARS})
+            elif mtype == "tts_error":
+                tts.companion.reject(str(data.get("id") or ""),
+                                     str(data.get("message") or "Companion synthesis failed."))
+            elif mtype == "ping":
+                await ws.send_json({"type": "pong"})
+    except (WebSocketDisconnect, RuntimeError):
+        pass
+    finally:
+        if token is not None:
+            tts.companion.unregister(token)
 
 
 # ---------------------------------------------------------------- frontend
@@ -535,7 +702,7 @@ if _dist.is_dir():
 def run() -> None:
     import uvicorn
     uvicorn.run("app.main:app", host=config.APP_HOST, port=config.APP_PORT,
-                log_level="info", ws_max_size=4 * 1024 * 1024)
+                log_level="info", ws_max_size=16 * 1024 * 1024)  # companion WAV replies
 
 
 if __name__ == "__main__":

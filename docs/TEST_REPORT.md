@@ -13,6 +13,7 @@ deployment case does not establish that the other is verified.
 | macOS native + Apple Silicon | **Verified** on the reference machine below (details per area; UI checks partially verified — see §6) |
 | Windows + WSL2 + Docker Compose + NVIDIA | **Not verified** — configuration delivered and validated for structure only; no Windows/NVIDIA hardware was available. Run the acceptance checks in [DEPLOY_WSL2_DOCKER.md](DEPLOY_WSL2_DOCKER.md). |
 | External LLM integration (real endpoint) | **Blocked** — provider, base URL, model ID, and API key remain TBA. The translation client was exercised against a local mock only (see §4); this is explicitly **not** claimed as a passed integration test. |
+| Talkie mode (two-way interpreter), backend | **Verified** on the reference machine via scripted clients (§8); browser UI, real call routing, and Windows voices **not verified** |
 
 ## Reference machine
 
@@ -166,7 +167,63 @@ real meeting audio) remain to be run on the intended hardware.
 - Whisper can hallucinate short phrases (e.g. “Thanks for watching.”) on
   near-silent or trailing audio; annotation-only segments are filtered, but
   hallucinated plain text is inherent to the model family.
-- Simultaneous microphone + computer-audio capture is out of scope for this
-  release, as specified.
-- One live session at a time; file jobs queue behind live sessions by
-  design (live has priority).
+- Real Time mode captures one source at a time; simultaneous microphone +
+  computer-audio capture exists only in Talkie mode (two fixed channels).
+- One live-type session (Real Time or Talkie) at a time; file jobs queue
+  behind it by design (live has priority).
+- Talkie's half-duplex gate drops speech that happens while the product is
+  speaking (by design); the browser voice engine cannot choose an output
+  device; per-direction routing needs Chrome/Edge.
+
+## 8. Talkie mode (added 2026-09-16) — backend verified, UI/hardware open
+
+Scripted clients drove the same protocols the browser uses, against the
+reference machine (whisper.cpp Metal, `base` model, local mock LLM, macOS
+`say` voices, and a stub in place of the ScreenCaptureKit helper so the
+"them" channel could be fed over `/ws/ingest`):
+
+- `/ws/talkie`: Korean speech streamed as the microphone and English speech
+  streamed as computer audio **at the same time** produced partials and
+  finals with the right `speaker`; both channels shared one segment index
+  space and one timeline; segment start times overlapped as sent.
+- Direction: `me` utterances were translated to English and `them`
+  utterances to Korean (the mock records the requested target); every
+  translation carried `speak: true`; each utterance was translated on its
+  own (no batching).
+- Half-duplex gate: while the client reported `tts: playing`, 3.5 s of
+  English fed to the computer-audio channel produced **no** utterance;
+  after `idle`, the next English utterance was transcribed and translated
+  again.
+- Stop: status `completed`; artifacts include TXT/SRT/VTT/JSON plus
+  `recording.me.wav` and `recording.them.wav` with correct durations;
+  TXT/SRT lines carry `Me:`/`Them:` prefixes; overlapping cues keep their
+  timings per speaker; `/api/jobs/{id}/segments` returns `speaker`.
+- Crash recovery: killing the backend mid-session left the job
+  `interrupted` at restart with both recordings' headers repaired (3.0 s
+  declared for 3.0 s received).
+- Regression: the Real Time flow (partials, finals, translation, stop,
+  artifacts, timings unchanged, no speaker prefixes) and a file job ran
+  unchanged after the `SpeechChannel` extraction.
+- TTS API: `/api/tts/voices` listed 148 macOS voices with language codes;
+  `POST /api/tts` (macOS voice) returned a valid 22.05 kHz WAV (2.5 s for a
+  Korean sentence); leading-dash text is safe (stdin); over-limit text →
+  400; unknown voice → 400; companion engine without a companion → 503.
+- Companion protocol: a simulated companion connected to `/ws/companion`
+  (bad token → 403), published two voices, answered a request with WAV that
+  `/api/tts` relayed unchanged, an error reply surfaced as 400 with its
+  message, and disconnecting unregistered the voices (503 afterwards).
+
+**Not verified** (needs an interactive/hardware pass):
+
+- Browser UI: microphone permission, output-device selectors (`setSinkId`,
+  Chrome/Edge), browser-voice playback, banners/rows/replay, prefs in
+  `localStorage`, the `tts playing/idle` gating messages sent by the
+  playback queue.
+- A real call: routing "to them" into a virtual device used as the meeting
+  app's microphone, echo behaviour without headphones.
+- The real ScreenCaptureKit helper in Talkie (the same helper Real Time
+  uses; the stub only proved the spawn/stop path).
+- Windows: WASAPI capture and SAPI synthesis in `capture_companion.py`
+  (pywin32 code path), Edge/Chrome voices.
+- Real LLM endpoint (still TBA) and translation quality for conversational
+  speech.

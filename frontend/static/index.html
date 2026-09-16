@@ -13,6 +13,7 @@
     <nav class="mode-tabs" role="tablist" aria-label="Mode selector">
       <button id="tab-files" class="mode-tab active" role="tab" aria-selected="true" aria-controls="view-files">From Files</button>
       <button id="tab-live" class="mode-tab" role="tab" aria-selected="false" aria-controls="view-live">Real Time</button>
+      <button id="tab-talkie" class="mode-tab" role="tab" aria-selected="false" aria-controls="view-talkie">Talkie</button>
       <button id="tab-history" class="mode-tab" role="tab" aria-selected="false" aria-controls="view-history">Previous Jobs</button>
     </nav>
     <div class="header-right">
@@ -224,6 +225,130 @@
   <div class="panel" id="live-results-panel" hidden>
     <h2>Session results</h2>
     <div id="live-results" class="artifact-row"></div>
+  </div>
+</section>
+
+<!-- ============================= TALKIE ============================= -->
+<section id="view-talkie" role="tabpanel" aria-labelledby="tab-talkie" hidden>
+
+  <div class="panel session-controls" id="talkie-controls">
+    <div class="session-row">
+      <label class="src-label">My language
+        <select id="t-source"></select>
+      </label>
+      <span class="swap-arrow" aria-hidden="true">⇄</span>
+      <label class="src-label">Their language
+        <select id="t-target"></select>
+      </label>
+      <label class="src-label">Microphone
+        <select id="t-mic"></select>
+      </label>
+      <button id="btn-talkie-start" class="btn btn-primary">Start</button>
+      <button id="btn-talkie-stop" class="btn btn-danger" hidden>Stop</button>
+      <span id="t-recstate" class="rec-state" aria-live="polite">Not running</span>
+      <span id="t-timer" class="timer" aria-label="Elapsed time">0:00</span>
+      <div class="meters">
+        <div class="meter"><span class="meter-label">Me</span><div class="level-wrap"><div id="t-level-me" class="level-bar"></div></div></div>
+        <div class="meter"><span class="meter-label">Them</span><div class="level-wrap"><div id="t-level-them" class="level-bar"></div></div></div>
+      </div>
+    </div>
+    <p id="t-source-hint" class="status-line"></p>
+    <p id="t-error" class="error-text" role="alert"></p>
+  </div>
+
+  <div class="panel collapsible">
+    <button class="collapsible-header" aria-expanded="false" data-target="talkie-engine-body">
+      <span class="collapsible-title">Engine &amp; translation</span>
+      <span class="collapsible-summary" id="talkie-engine-summary"></span>
+      <span class="disclosure" aria-hidden="true">▾</span>
+    </button>
+    <div class="collapsible-body" id="talkie-engine-body" hidden>
+      <div class="form-grid">
+        <label>Model <select id="t-model"></select>
+          <small id="t-model-hint">Smaller models keep the conversation flowing; larger ones are more accurate.</small></label>
+        <label>Accuracy / speed
+          <select id="t-quality">
+            <option value="fast" selected>Fast — lowest latency</option>
+            <option value="balanced">Balanced</option>
+            <option value="accuracy">Accuracy — slower</option>
+          </select></label>
+        <label>Hardware <select id="t-device"></select></label>
+        <label>LLM preset (translation) <select id="t-preset"></select>
+          <small id="t-preset-hint"></small></label>
+        <label class="check"><input id="t-gate" type="checkbox" checked> Pause listening while speaking
+          <small>Half-duplex: while the product speaks a translation, neither the microphone nor computer audio is transcribed, so its own voice is never interpreted again. Turn off only with headphones and a virtual output device.</small></label>
+      </div>
+      <details class="advanced">
+        <summary>Advanced parameters</summary>
+        <div class="form-grid">
+          <label>Speech endpoint silence (ms) <input id="t-silence" type="number" min="200" max="3000" step="50" placeholder="700">
+            <small>Silence needed to finalize an utterance and start translating it.</small></label>
+          <label>Max utterance duration (s) <input id="t-maxchunk" type="number" min="3" max="30" step="1" placeholder="10">
+            <small>Longest utterance before a forced split.</small></label>
+          <label>Partial update interval (s) <input id="t-partial" type="number" min="0.5" max="5" step="0.5" placeholder="1.5">
+            <small>How often provisional text refreshes.</small></label>
+        </div>
+      </details>
+      <p id="t-translation-status" class="status-line"></p>
+    </div>
+  </div>
+
+  <div class="panel collapsible">
+    <button class="collapsible-header" aria-expanded="false" data-target="talkie-voice-body">
+      <span class="collapsible-title">Voice output</span>
+      <span class="collapsible-summary" id="talkie-voice-summary"></span>
+      <span class="disclosure" aria-hidden="true">▾</span>
+    </button>
+    <div class="collapsible-body" id="talkie-voice-body" hidden>
+      <div class="form-grid">
+        <label>Voice engine <select id="t-tts-engine"></select>
+          <small id="t-tts-engine-hint"></small></label>
+        <label>Speaking rate <input id="t-rate" type="number" min="0.5" max="2" step="0.1" placeholder="1.0">
+          <small>1.0 is normal speed.</small></label>
+        <label>Voice for them <select id="t-voice-them"></select>
+          <small>Speaks translations in their language.</small></label>
+        <label>Voice for me <select id="t-voice-me"></select>
+          <small>Speaks translations in my language.</small></label>
+        <label id="t-sink-them-wrap">Output for “to them” <select id="t-sink-them"></select>
+          <small>For calls: pick the virtual audio device your meeting app uses as its microphone.</small></label>
+        <label id="t-sink-me-wrap">Output for “to me” <select id="t-sink-me"></select>
+          <small>Usually your headphones.</small></label>
+      </div>
+      <div class="btn-row">
+        <button id="btn-test-them" class="btn btn-secondary" type="button">Test “to them”</button>
+        <button id="btn-test-me" class="btn btn-secondary" type="button">Test “to me”</button>
+        <span id="t-tts-test-result" class="status-line" role="status"></span>
+      </div>
+      <p id="t-sink-hint" class="status-line"></p>
+    </div>
+  </div>
+
+  <div class="speak-banners">
+    <div class="panel speak-banner" id="banner-them">
+      <div class="speak-head"><span class="chip them">To them</span><span id="banner-them-lang" class="muted"></span><span id="banner-them-state" class="speak-state" aria-live="polite"></span>
+        <button id="btn-replay-them" class="btn btn-sm btn-ghost" hidden>Replay</button></div>
+      <div id="banner-them-text" class="speak-text" aria-live="polite">Waiting for you to speak…</div>
+    </div>
+    <div class="panel speak-banner" id="banner-me">
+      <div class="speak-head"><span class="chip me">To me</span><span id="banner-me-lang" class="muted"></span><span id="banner-me-state" class="speak-state" aria-live="polite"></span>
+        <button id="btn-replay-me" class="btn btn-sm btn-ghost" hidden>Replay</button></div>
+      <div id="banner-me-text" class="speak-text" aria-live="polite">Waiting for the other person…</div>
+    </div>
+  </div>
+
+  <div class="panel" id="talkie-transcript-panel">
+    <div class="transcript-head">
+      <h2>Conversation <span class="muted">(newest first — exports are chronological)</span></h2>
+      <span id="talkie-status-chip" class="chip" aria-live="polite" hidden></span>
+    </div>
+    <p id="talkie-empty" class="empty-state">Choose the two languages, an LLM preset, and press Start. Your microphone and the computer audio (the call) are interpreted in both directions. Nothing starts automatically.</p>
+    <div id="t-rows" class="segment-rows" aria-label="Conversation"></div>
+    <button id="btn-t-return-latest" class="btn btn-secondary return-latest" hidden>Return to Latest</button>
+  </div>
+
+  <div class="panel" id="talkie-results-panel" hidden>
+    <h2>Session results</h2>
+    <div id="talkie-results" class="artifact-row"></div>
   </div>
 </section>
 
