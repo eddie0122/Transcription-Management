@@ -57,9 +57,6 @@ transcription (below) to validate the CUDA/cuDNN dependency chain end to end.
 
 ```bash
 cp .env.example .env
-mkdir -p secrets
-printf '%s' 'TBA' > secrets/llm_api_key.txt     # placeholder, not a credential
-chmod 600 secrets/llm_api_key.txt
 
 docker compose -f docker-compose.yml config --quiet   # validate configuration
 docker compose -f docker-compose.yml up -d --build
@@ -77,16 +74,18 @@ Stop with `docker compose -f docker-compose.yml down`.
 
 ## External LLM connectivity
 
-`.env` values `LLM_BASE_URL` / `LLM_MODEL` and the secret file are **TBA**
-until the provider is decided. While they are TBA:
+The LLM connection (base URL, model ID, API key, timeout) is configured
+entirely in the UI: **Settings → LLM presets**. There is no environment- or
+secret-file-based LLM configuration. While a preset contains TBA values:
 
 - No preset containing TBA values can be activated; no LLM request is made.
 - Transcription remains fully usable; translation shows *awaiting
   configuration*.
 
-When values arrive, they seed a first-run preset named “Environment default”.
-User edits are persisted and never overwritten on container restart. If the
-LLM runs on the Windows host, use `http://host.docker.internal:PORT/v1` and
+API keys entered in the UI are stored in the backend's protected file store
+inside the `app_data` volume (0600 permissions), never in frontend bundles or
+logs. If the LLM runs on the Windows host, use
+`http://host.docker.internal:PORT/v1` and
 make sure the host server listens on an interface reachable from Docker
 Desktop (a server bound only to Windows loopback may not be reachable) with
 a narrowly scoped firewall rule. **Test from the backend container**, not
@@ -151,9 +150,8 @@ container has no Metal access. The macOS deployment (Section 14 / the
    docker run --rm -v audio-transcription_app_data:/data -v "$PWD:/backup" \
      alpine tar czf /backup/app_data.tgz -C /data .
    ```
-3. Back up `secrets/llm_api_key.txt` (protected) alongside — credentials in
-   the container use a file store inside `app_data`, so the volume backup
-   already includes them; keep the backup itself protected.
+3. Credentials entered in the UI use a file store inside `app_data`, so the
+   volume backup already includes them; keep the backup itself protected.
 4. Restore by recreating the volume and untarring before `up`.
 
 ### Upgrade

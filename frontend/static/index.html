@@ -13,6 +13,7 @@
     <nav class="mode-tabs" role="tablist" aria-label="Mode selector">
       <button id="tab-files" class="mode-tab active" role="tab" aria-selected="true" aria-controls="view-files">From Files</button>
       <button id="tab-live" class="mode-tab" role="tab" aria-selected="false" aria-controls="view-live">Real Time</button>
+      <button id="tab-history" class="mode-tab" role="tab" aria-selected="false" aria-controls="view-history">Previous Jobs</button>
     </nav>
     <div class="header-right">
       <div id="global-rec" class="global-rec" hidden>
@@ -64,7 +65,7 @@
             <option value="balanced">Balanced</option>
             <option value="accuracy" selected>Accuracy — wider beam, slower</option>
           </select>
-          <small>File mode favors accuracy by default.</small>
+          <small>File mode favors accuracy by default. All presets include anti-repetition safeguards; they differ in decoding search width.</small>
         </label>
         <label>Hardware
           <select id="f-device"></select>
@@ -91,6 +92,9 @@
           <label class="wide">Initial prompt / vocabulary hints
             <input id="f-prompt" type="text" maxlength="800" placeholder="Names, jargon, spelling hints…">
             <small>Passed to the engine where supported.</small></label>
+          <label class="wide">Extra engine parameters
+            <textarea id="f-extra" rows="3" spellcheck="false"></textarea>
+            <small id="f-extra-hint"></small></label>
         </div>
       </details>
     </div>
@@ -222,6 +226,15 @@
     <div id="live-results" class="artifact-row"></div>
   </div>
 </section>
+
+<!-- ============================= PREVIOUS JOBS ============================= -->
+<section id="view-history" role="tabpanel" aria-labelledby="tab-history" hidden>
+  <div class="panel">
+    <h2>Previous jobs</h2>
+    <p class="status-line" id="history-summary"></p>
+    <ul id="history-list" class="job-list"></ul>
+  </div>
+</section>
 </main>
 
 <!-- announcements for assistive technology (recording/errors only) -->
@@ -236,7 +249,6 @@
   <nav class="settings-tabs" role="tablist" aria-label="Settings sections">
     <button class="settings-tab active" data-pane="pane-llm" role="tab" aria-selected="true">LLM presets</button>
     <button class="settings-tab" data-pane="pane-engine" role="tab" aria-selected="false">Transcription</button>
-    <button class="settings-tab" data-pane="pane-history" role="tab" aria-selected="false">Previous jobs</button>
     <button class="settings-tab" data-pane="pane-retention" role="tab" aria-selected="false">Automatic deletion</button>
   </nav>
 
@@ -280,11 +292,6 @@
     </div>
     <button id="btn-save-defaults" class="btn btn-primary">Save defaults</button>
     <p id="defaults-saved" class="status-line" role="status"></p>
-  </div>
-
-  <div id="pane-history" class="settings-pane" hidden>
-    <p class="status-line" id="history-summary"></p>
-    <ul id="history-list" class="job-list"></ul>
   </div>
 
   <div id="pane-retention" class="settings-pane" hidden>

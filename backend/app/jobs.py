@@ -256,16 +256,15 @@ class JobManager:
         preset = engines.PRESETS.get(settings.get("quality_preset", "balanced"),
                                      engines.PRESETS["balanced"])
         adv = settings.get("advanced") or {}
-        return {
-            "model": settings.get("model", "base"),
-            "language": settings.get("language") or None,  # None = auto-detect
-            "beam_size": adv.get("beam_size", preset["beam_size"]),
-            "temperature": adv.get("temperature", preset["temperature"]),
-            "initial_prompt": adv.get("initial_prompt"),
-            "word_timestamps": bool(adv.get("word_timestamps", False)),
-            "vad": adv.get("vad", True),
-            "compute_type": adv.get("compute_type", "auto"),
-        }
+        # The preset supplies optimized defaults for every decoding parameter;
+        # any advanced value (including engine passthroughs 'extra' and
+        # 'extra_args') overrides its preset counterpart.
+        opts = dict(preset)
+        opts.update({k: v for k, v in adv.items() if v is not None})
+        opts["model"] = settings.get("model", "base")
+        opts["language"] = settings.get("language") or None  # None = auto-detect
+        opts.setdefault("compute_type", "auto")
+        return opts
 
     def _run_translation(self, job_id: str, settings: Dict[str, Any],
                          cancel: threading.Event) -> bool:

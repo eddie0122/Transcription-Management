@@ -44,11 +44,9 @@ MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "2048"))
 MAX_DURATION_MIN = int(os.environ.get("MAX_DURATION_MIN", "300"))
 MAX_QUEUED_JOBS = int(os.environ.get("MAX_QUEUED_JOBS", "100"))
 
-# First-run LLM preset seeding (Docker case). "TBA" is an unconfigured
-# placeholder, never a working endpoint; seeding is skipped for it.
-LLM_BASE_URL = os.environ.get("LLM_BASE_URL", "TBA")
-LLM_MODEL = os.environ.get("LLM_MODEL", "TBA")
-LLM_API_KEY_FILE = os.environ.get("LLM_API_KEY_FILE", "")
+# LLM connections (URL, model, key) are configured entirely in the UI
+# (Settings → LLM presets) and stored via the credential store; there is no
+# environment- or file-based LLM configuration.
 
 FRONTEND_DIST = os.environ.get(
     "FRONTEND_DIST",

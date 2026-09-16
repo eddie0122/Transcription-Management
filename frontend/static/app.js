@@ -83,6 +83,7 @@ async function init() {
   populatePresetSelects();
   applyDefaults();
   renderJobs();
+  renderHistory();
   renderSettingsPanes();
   updateSummaries();
   connectEvents();
@@ -148,6 +149,7 @@ function wireStaticHandlers() {
   });
   $("tab-files").addEventListener("click", () => switchMode("files"));
   $("tab-live").addEventListener("click", () => switchMode("live"));
+  $("tab-history").addEventListener("click", () => switchMode("history"));
   $("btn-settings").addEventListener("click", openSettings);
   $("btn-settings-close").addEventListener("click", () => $("settings-modal").close());
   $("btn-review-close").addEventListener("click", () => $("review-modal").close());
@@ -180,14 +182,15 @@ function wireStaticHandlers() {
 function switchMode(mode) {
   // Switching modes never stops a session or cancels jobs; the global
   // recording chip keeps Stop reachable from everywhere.
-  const files = mode === "files";
-  $("view-files").hidden = !files;
-  $("view-live").hidden = files;
-  $("tab-files").classList.toggle("active", files);
-  $("tab-live").classList.toggle("active", !files);
-  $("tab-files").setAttribute("aria-selected", String(files));
-  $("tab-live").setAttribute("aria-selected", String(!files));
-  $("global-rec").hidden = !(state.live && files);
+  for (const [m, view, tab] of [["files", "view-files", "tab-files"],
+                                ["live", "view-live", "tab-live"],
+                                ["history", "view-history", "tab-history"]]) {
+    const active = mode === m;
+    $(view).hidden = !active;
+    $(tab).classList.toggle("active", active);
+    $(tab).setAttribute("aria-selected", String(active));
+  }
+  $("global-rec").hidden = !(state.live && mode !== "live");
 }
 
 /* ---------------- selects ---------------- */
@@ -310,6 +313,20 @@ function populateComputeTypes() {
   }
   $("f-vad-wrap").hidden = !caps.vad;
   $("f-words-wrap").hidden = !caps.word_timestamps;
+  const extra = $("f-extra");
+  if (caps.extra_mode === "kwargs") {
+    extra.placeholder = "repetition_penalty=1.15\nno_repeat_ngram_size=3";
+    $("f-extra-hint").textContent =
+      "One key=value per line — any faster-whisper transcribe() parameter (e.g. " +
+      "repetition_penalty, no_repeat_ngram_size, hallucination_silence_threshold, " +
+      "patience). Values are parsed as JSON where possible; a bare key means true. " +
+      "Unknown names are rejected with the full supported list.";
+  } else {
+    extra.placeholder = "-et 2.8 --suppress-nst";
+    $("f-extra-hint").textContent =
+      "Raw whisper-cli flags appended to the command (run `whisper-cli -h` for the " +
+      "full list). Managed input/model/JSON-output flags cannot be overridden.";
+  }
 }
 
 function populatePresetSelects() {
@@ -460,6 +477,26 @@ function collectSettings(prefix) {
     if (!$("f-vad-wrap").hidden) adv.vad = $("f-vad").checked;
     if (!$("f-words-wrap").hidden) adv.word_timestamps = $("f-words").checked;
     if ($("f-prompt").value.trim()) adv.initial_prompt = $("f-prompt").value.trim();
+    const extraRaw = $("f-extra").value.trim();
+    if (extraRaw) {
+      const caps = state.system.capabilities[activeEngineFor("f-device")];
+      if (caps.extra_mode === "kwargs") {
+        const extra = {};
+        for (const line of extraRaw.split("\n")) {
+          const t = line.trim();
+          if (!t || t.startsWith("#")) continue;
+          const i = t.indexOf("=");
+          const key = (i < 0 ? t : t.slice(0, i)).trim();
+          if (!key) continue;
+          if (i < 0) { extra[key] = true; continue; }  // bare key = boolean flag
+          const raw = t.slice(i + 1).trim();
+          try { extra[key] = JSON.parse(raw); } catch { extra[key] = raw; }
+        }
+        if (Object.keys(extra).length) adv.extra = extra;
+      } else {
+        adv.extra_args = extraRaw;
+      }
+    }
     if (num("-track") !== undefined) settings.audio_track = num("-track");
   } else {
     const adv = settings.advanced;
@@ -593,8 +630,8 @@ function renderResultRow(job) {
       ? `<button class="btn btn-sm" data-act="review">Review</button>` : "") +
     `<button class="btn btn-sm btn-ghost" data-act="delete">Delete</button></span></div>` +
     `<div class="artifact-row">` +
-    artifactButtons(job, ["original_txt", "recording"]) +
-    (hasTranslated ? " " + artifactButtons(job, ["translated_txt"]) : "") +
+    artifactButtons(job, ["original_txt", "original_srt", "recording"]) +
+    (hasTranslated ? " " + artifactButtons(job, ["translated_txt", "translated_srt"]) : "") +
     `</div>` +
     (job.error ? `<div class="job-error">${esc(job.error)}</div>` : "") +
     (((job.media || {}).audio_tracks || []).length > 1
@@ -986,7 +1023,7 @@ function onSessionStopped(live, msg) {
     '<p class="empty-state">No speech was recognized in this session.</p>';
   if (msg.status === "completed_with_translation_errors") {
     results.insertAdjacentHTML("beforeend",
-      `<p class="status-line">Some segments were not translated. Open Settings → Previous jobs to retry translation.</p>`);
+      `<p class="status-line">Some segments were not translated. Open the Previous Jobs tab to retry translation.</p>`);
   }
 }
 
@@ -1018,7 +1055,6 @@ function renderSettingsPanes() {
   renderPresetList();
   renderHwOptions();
   renderModelsTable();
-  renderHistory();
 }
 
 function wireSettingsControls() {

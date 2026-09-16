@@ -9,9 +9,11 @@ explicitly selected backend is never silently replaced: resolution raises
 EngineError with an actionable message and a suggested compatible fallback
 instead.
 """
+import inspect
 import json
 import os
 import re
+import shlex
 import shutil
 import subprocess
 import threading
@@ -47,11 +49,20 @@ FASTERWHISPER_MODELS = {
     "large-v3-turbo": 1_620_000_000,
 }
 
-# Accuracy/speed presets -> engine-neutral defaults.
+# Accuracy/speed presets -> engine-neutral optimized defaults. Every preset
+# carries the anti-repetition safeguards (temperature fallback ladder, no
+# cross-window text conditioning, VAD); they differ in decoding search width.
+# Any key can be overridden per job from the Advanced panel.
 PRESETS = {
-    "fast":     {"beam_size": 1, "temperature": 0.0},
-    "balanced": {"beam_size": 3, "temperature": 0.0},
-    "accuracy": {"beam_size": 5, "temperature": 0.0},
+    "fast":     {"beam_size": 1, "best_of": 1, "temperature": 0.0,
+                 "temperature_fallback": True,
+                 "condition_on_previous_text": False, "vad": True},
+    "balanced": {"beam_size": 3, "best_of": 3, "temperature": 0.0,
+                 "temperature_fallback": True,
+                 "condition_on_previous_text": False, "vad": True},
+    "accuracy": {"beam_size": 5, "best_of": 5, "temperature": 0.0,
+                 "temperature_fallback": True,
+                 "condition_on_previous_text": False, "vad": True},
 }
 
 
@@ -274,7 +285,31 @@ class WhisperCppEngine:
         "beam_size": True, "temperature": True, "initial_prompt": True,
         "word_timestamps": False, "vad": False,
         "compute_types": [],  # precision fixed by the ggml model file
+        # advanced.extra_args: raw whisper-cli flags appended to the command
+        "extra_mode": "cli",
     }
+
+    # Flags the adapter owns (input, model, JSON output contract); extra
+    # arguments may not override them.
+    _MANAGED_FLAGS = {"-m", "--model", "-f", "--file", "-of", "--output-file",
+                      "-oj", "--output-json", "-ojf", "--output-json-full",
+                      "-h", "--help"}
+
+    @classmethod
+    def _extra_args(cls, opts: Dict[str, Any]) -> List[str]:
+        raw = str(opts.get("extra_args") or "").strip()
+        if not raw:
+            return []
+        try:
+            args = shlex.split(raw)
+        except ValueError as e:
+            raise EngineError(f"Could not parse extra whisper-cli arguments: {e}")
+        clash = sorted(cls._MANAGED_FLAGS.intersection(args))
+        if clash:
+            raise EngineError(
+                "Extra whisper-cli arguments may not override managed flags: "
+                + ", ".join(clash) + ".")
+        return args
 
     def __init__(self, device: str):
         self.device = device  # 'apple' or 'cpu'
@@ -310,12 +345,25 @@ class WhisperCppEngine:
         cmd += ["-l", lang]
         if opts.get("beam_size"):
             cmd += ["-bs", str(int(opts["beam_size"]))]
+        if opts.get("best_of"):
+            cmd += ["-bo", str(int(opts["best_of"]))]
         if opts.get("temperature") is not None:
             cmd += ["-tp", str(float(opts["temperature"]))]
+        if not opts.get("temperature_fallback", True):
+            cmd += ["-nf"]  # disable the temperature retry ladder
+        if not opts.get("condition_on_previous_text", False) \
+                and not opts.get("initial_prompt"):
+            # No cross-window text conditioning, so a repetition glitch in one
+            # window cannot cascade through the rest of the file. -mc 0 also
+            # discards initial-prompt tokens, so conditioning stays on when the
+            # user supplied vocabulary hints (whisper.cpp's entropy heuristic
+            # still guards against loops there).
+            cmd += ["-mc", "0"]
         if opts.get("initial_prompt"):
             cmd += ["--prompt", str(opts["initial_prompt"])[:800]]
         if self.device == "cpu":
             cmd += ["-ng"]  # disable GPU explicitly for the CPU selection
+        cmd += self._extra_args(opts)
         if nice and hasattr(os, "nice"):
             preexec = lambda: os.nice(10)  # noqa: E731
         else:
@@ -382,6 +430,8 @@ class FasterWhisperEngine:
         "beam_size": True, "temperature": True, "initial_prompt": True,
         "word_timestamps": True, "vad": True,
         "compute_types": ["auto", "float16", "int8_float16", "int8", "float32"],
+        # advanced.extra: key/value map of any transcribe() parameter
+        "extra_mode": "kwargs",
     }
 
     _model_cache: Dict[str, Any] = {}
@@ -431,21 +481,53 @@ class FasterWhisperEngine:
                     raise EngineError(f"Failed to load model: {msg}")
             return self._model_cache[key]
 
+    @staticmethod
+    def _validated_extra(model, extra: Any) -> Dict[str, Any]:
+        """Any other faster-whisper transcribe() parameter, passed through
+        after validation against the installed library's actual signature."""
+        if not extra:
+            return {}
+        if not isinstance(extra, dict):
+            raise EngineError("Advanced 'extra' parameters must be a key/value map.")
+        valid = set(inspect.signature(model.transcribe).parameters) - {"audio"}
+        unknown = sorted(set(extra) - valid)
+        if unknown:
+            raise EngineError(
+                "Unknown faster-whisper parameter(s): " + ", ".join(unknown)
+                + ". Supported parameters: " + ", ".join(sorted(valid)) + ".")
+        return dict(extra)
+
     def transcribe(self, wav_path: Path, opts: Dict[str, Any],
                    on_progress: Optional[Callable[[float], None]] = None,
                    cancel: Optional[threading.Event] = None,
                    nice: bool = False) -> Dict[str, Any]:
         model = self._load(opts.get("model", "base"), opts.get("compute_type", "auto"))
+        # Guard against Whisper repetition loops: give the decoder its
+        # temperature-fallback ladder (retries a segment when the output is
+        # repetitive; a bare scalar disables the retry entirely), and do not
+        # feed each window's text into the next one, so a glitch in one
+        # 30-second window cannot cascade through the rest of the file.
+        base_temp = float(opts.get("temperature") or 0.0)
+        if opts.get("temperature_fallback", True):
+            temperature: Any = [t for t in (base_temp, 0.2, 0.4, 0.6, 0.8, 1.0)
+                                if t >= base_temp]
+        else:
+            temperature = base_temp
         kwargs: Dict[str, Any] = {
             "beam_size": int(opts.get("beam_size") or 5),
-            "temperature": float(opts.get("temperature") or 0.0),
+            "temperature": temperature,
+            "condition_on_previous_text": bool(
+                opts.get("condition_on_previous_text", False)),
             "vad_filter": bool(opts.get("vad", True)),
             "word_timestamps": bool(opts.get("word_timestamps", False)),
         }
+        if opts.get("best_of"):
+            kwargs["best_of"] = int(opts["best_of"])
         if opts.get("language"):
             kwargs["language"] = opts["language"]
         if opts.get("initial_prompt"):
             kwargs["initial_prompt"] = str(opts["initial_prompt"])[:800]
+        kwargs.update(self._validated_extra(model, opts.get("extra")))
         segments_iter, info = model.transcribe(str(wav_path), **kwargs)
         duration = getattr(info, "duration", None) or 1.0
         segments = []

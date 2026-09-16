@@ -70,12 +70,12 @@ native configuration: listen address/port, Apple Silicon adapter selection,
 data/model paths, and the seven-day retention default. It contains no Docker
 values and no secrets.
 
-**LLM values remain TBA.** Enter real base URL / model ID / API key in
-Settings → LLM presets when available; until then translation shows
-*awaiting configuration* and transcription works independently. API keys are
-stored in the **macOS Keychain** (service `AudioTranscription`), never in
-files, logs, or the frontend. No Docker secret path such as
-`/run/secrets/llm_api_key` is used.
+**The LLM connection is configured entirely in the UI** (Settings → LLM
+presets: base URL, model ID, API key, timeout). Until real values replace the
+TBA placeholders, translation shows *awaiting configuration* and
+transcription works independently. API keys are stored in the **macOS
+Keychain** (service `AudioTranscription`), never in files, logs, or the
+frontend.
 
 ## Storage and maintenance
 

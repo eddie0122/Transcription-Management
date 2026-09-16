@@ -34,11 +34,6 @@ services:
       TRANSCRIPTION_ENGINE: faster-whisper
       TRANSCRIPTION_DEVICE: cpu
       RETENTION_DAYS: "${RETENTION_DAYS:-7}"
-      LLM_BASE_URL: "${LLM_BASE_URL:-TBA}"
-      LLM_MODEL: "${LLM_MODEL:-TBA}"
-      LLM_API_KEY_FILE: /run/secrets/llm_api_key
-    secrets:
-      - llm_api_key
     volumes:
       - app_data:/app/data
       - model_cache:/app/models
@@ -65,7 +60,3 @@ services:
 volumes:
   app_data:
   model_cache:
-
-secrets:
-  llm_api_key:
-    file: ./secrets/llm_api_key.txt

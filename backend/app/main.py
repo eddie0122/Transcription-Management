@@ -49,31 +49,12 @@ def _recover_interrupted() -> None:
                       "Completed portions were preserved; you can retry the failed stage.")
 
 
-def _seed_env_preset() -> None:
-    """Docker first-run preset defaults from environment; user edits are
-    persisted and never overwritten on restart. TBA values seed nothing."""
-    if db.get_setting("env_preset_seeded"):
-        return
-    if config.is_tba(config.LLM_BASE_URL) or config.is_tba(config.LLM_MODEL):
-        return
-    key_ref = ""
-    if config.LLM_API_KEY_FILE and Path(config.LLM_API_KEY_FILE).is_file():
-        content = Path(config.LLM_API_KEY_FILE).read_text().strip()
-        if not config.is_tba(content):
-            key_ref = "file:" + config.LLM_API_KEY_FILE
-    db.create_preset("Environment default", config.LLM_BASE_URL, config.LLM_MODEL,
-                     60, {}, key_ref)
-    db.set_setting("env_preset_seeded", True)
-    log.info("Seeded first-run LLM preset from environment")
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     config.ensure_dirs()
     db.init()
     bus.bind_loop(asyncio.get_event_loop())
     _recover_interrupted()
-    _seed_env_preset()
     retention.cleanup()
     manager.live_active = live_manager.active
     manager.start()
@@ -230,8 +211,8 @@ def presets_update(pid: str, body: Dict[str, Any]):
     if "params" in body:
         fields["params"] = body["params"]
     if body.get("api_key"):
-        fields["key_ref"] = secret_store.store(body["api_key"], existing_ref=p["key_ref"]
-                                               if not p["key_ref"].startswith("file:") else None)
+        fields["key_ref"] = secret_store.store(body["api_key"],
+                                               existing_ref=p["key_ref"] or None)
     if body.get("clear_api_key"):
         secret_store.delete(p["key_ref"])
         fields["key_ref"] = ""

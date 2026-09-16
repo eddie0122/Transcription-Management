@@ -59,12 +59,6 @@ class SecretStore:
     def load(self, ref: str) -> Optional[str]:
         if not ref:
             return None
-        if ref.startswith("file:"):
-            # e.g. Docker secret file supplied via LLM_API_KEY_FILE
-            try:
-                return Path(ref[5:]).read_text().strip() or None
-            except OSError:
-                return None
         if config.IS_MACOS:
             val = self._keychain_load(ref)
             if val is not None:
@@ -75,7 +69,7 @@ class SecretStore:
             return None
 
     def delete(self, ref: str) -> None:
-        if not ref or ref.startswith("file:"):
+        if not ref:
             return
         if config.IS_MACOS:
             subprocess.run(

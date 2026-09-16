@@ -1,6 +1,4 @@
 .env
-secrets/*
-!secrets/README.md
 backend/.venv/
 __pycache__/
 *.pyc
